@@ -1,0 +1,7 @@
+.env
+*.log
+*.sln24
+*.wav
+*.mp3
+deploy/kubernetes/secret.yaml
+

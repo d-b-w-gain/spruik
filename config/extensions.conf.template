@@ -1,0 +1,54 @@
+[general]
+static=yes
+writeprotect=yes
+autofallthrough=yes
+
+[globals]
+RING_SECONDS=35
+
+[from-trunk]
+exten => s,1,Goto(incoming,1)
+exten => _X!,1,Goto(incoming,1)
+exten => _+X!,1,Goto(incoming,1)
+
+exten => incoming,1,NoOp(Incoming trunk call)
+  same => n,Set(NORMALIZED_CALLER=${FILTER(0-9,${CALLERID(num)})})
+  same => n,GotoIf($["${NORMALIZED_CALLER}" = "${VIP_NUMBER_LOCAL}" | "${NORMALIZED_CALLER}" = "${VIP_NUMBER_INTL}"]?vip,1)
+  same => n,Goto(standard,1)
+
+exten => vip,1,NoOp(Personalized caller)
+  same => n,Gosub(greeting,s,1(vip))
+  same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},t)
+  same => n,Hangup()
+
+exten => standard,1,NoOp(Standard caller)
+  same => n,Gosub(greeting,s,1(standard))
+  same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},t)
+  same => n,Hangup()
+
+[greeting]
+exten => s,1,Ringing()
+  same => n,Set(DAYPART=evening)
+  same => n,Set(LOCAL_HOUR=${STRFTIME(${EPOCH},,%H)})
+  same => n,ExecIf($[${LOCAL_HOUR} < 18]?Set(DAYPART=afternoon))
+  same => n,ExecIf($[${LOCAL_HOUR} < 12]?Set(DAYPART=morning))
+  same => n,AGI(generate-greeting.sh,${ARG1},${DAYPART},${UNIQUEID})
+  same => n,Answer()
+  same => n,Wait(0.5)
+  same => n,ExecIf($["${TTS_FILE}" != ""]?Playback(${TTS_FILE}))
+  same => n,Return()
+
+[from-internal]
+exten => 101,1,Dial(PJSIP/101,30)
+  same => n,Hangup()
+exten => 102,1,Dial(PJSIP/102,30)
+  same => n,Hangup()
+exten => 600,1,Gosub(greeting,s,1(standard))
+  same => n,Hangup()
+exten => 601,1,Gosub(greeting,s,1(vip))
+  same => n,Hangup()
+exten => _X!,1,Dial(PJSIP/${EXTEN}@trunk-endpoint,60)
+  same => n,Hangup()
+exten => _+X!,1,Dial(PJSIP/${EXTEN}@trunk-endpoint,60)
+  same => n,Hangup()
+
