@@ -1,4 +1,4 @@
-# Tertius PABX
+# Spruik
 
 A small Asterisk PABX that registers once with a SIP carrier, rings desktop and
 mobile extensions simultaneously, and generates caller-specific greetings with
@@ -49,7 +49,7 @@ Create the Secret without committing it:
 
 ```sh
 kubectl apply -f deploy/kubernetes/namespace.yaml
-kubectl -n telephony create secret generic tertius-pabx-secrets \
+kubectl -n telephony create secret generic spruik-secrets \
   --from-literal=SIP_TRUNK_PASSWORD='replace-me' \
   --from-literal=EXTENSION_101_PASSWORD='replace-me' \
   --from-literal=EXTENSION_102_PASSWORD='replace-me'
@@ -82,4 +82,3 @@ Docker host; in Kubernetes it defaults to the companion service in namespace
 ## License
 
 MIT
-

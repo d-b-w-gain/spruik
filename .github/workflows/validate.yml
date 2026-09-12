@@ -15,6 +15,5 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config
-      - name: Build PABX image
-        run: docker build -t tertius-pabx:test .
-
+      - name: Build Spruik image
+        run: docker build -t spruik:test .

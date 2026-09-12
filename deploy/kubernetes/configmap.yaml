@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: tertius-pabx-settings
+  name: spruik-settings
   namespace: telephony
 data:
   PBX_LOCAL_NET: 192.0.2.0/24
@@ -16,4 +16,3 @@ data:
   VIP_NUMBER_INTL: "61400000000"
   VIP_GREETING: Good {daypart}, special caller. Welcome to Example Engineering. Please hold while we connect you.
   VIP_VOICE: am_santa
-

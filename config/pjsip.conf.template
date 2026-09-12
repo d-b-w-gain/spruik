@@ -1,6 +1,6 @@
 [global]
 type=global
-user_agent=Tertius PABX
+user_agent=Spruik
 endpoint_identifier_order=ip,username,anonymous
 
 [transport-udp]
@@ -111,4 +111,3 @@ type=aor
 max_contacts=1
 remove_existing=yes
 qualify_frequency=30
-

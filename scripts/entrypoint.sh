@@ -20,14 +20,14 @@ for name in SIP_TRUNK_PASSWORD EXTENSION_101_PASSWORD EXTENSION_102_PASSWORD; do
   esac
 done
 
-cp /opt/tertius/config/asterisk.conf /opt/tertius/config/logger.conf \
-  /opt/tertius/config/modules.conf /opt/tertius/config/rtp.conf /etc/asterisk/
+cp /opt/spruik/config/asterisk.conf /opt/spruik/config/logger.conf \
+  /opt/spruik/config/modules.conf /opt/spruik/config/rtp.conf /etc/asterisk/
 
 envsubst '${PBX_LOCAL_NET} ${PBX_ADVERTISED_ADDRESS} ${SIP_TRUNK_HOST} ${SIP_TRUNK_USERNAME} ${SIP_TRUNK_PASSWORD} ${SIP_TRUNK_MATCH_IP} ${EXTENSION_101_PASSWORD} ${EXTENSION_102_PASSWORD}' \
-  < /opt/tertius/config/pjsip.conf.template > /etc/asterisk/pjsip.conf
+  < /opt/spruik/config/pjsip.conf.template > /etc/asterisk/pjsip.conf
 
 envsubst '${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
-  < /opt/tertius/config/extensions.conf.template > /etc/asterisk/extensions.conf
+  < /opt/spruik/config/extensions.conf.template > /etc/asterisk/extensions.conf
 
 chmod 0600 /etc/asterisk/pjsip.conf
 exec "$@"

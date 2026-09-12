@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gettext-base jq \
     && rm -rf /var/lib/apt/lists/*
 
-COPY config/ /opt/tertius/config/
+COPY config/ /opt/spruik/config/
 COPY scripts/entrypoint.sh scripts/generate-greeting.sh /usr/local/bin/
 
 RUN chmod 0555 /usr/local/bin/entrypoint.sh /usr/local/bin/generate-greeting.sh \
@@ -24,4 +24,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/asterisk", "-f", "-n"]
-
