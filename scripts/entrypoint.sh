@@ -3,6 +3,8 @@ set -eu
 
 export PBX_LOCAL_NET="${PBX_LOCAL_NET:-192.0.2.0/24}"
 export PBX_ADVERTISED_ADDRESS="${PBX_ADVERTISED_ADDRESS:-192.0.2.10}"
+export TIMEZONE="${TIMEZONE:-Australia/Sydney}"
+export RING_SECONDS="${RING_SECONDS:-35}"
 export SIP_TRUNK_HOST="${SIP_TRUNK_HOST:-sip.example.invalid}"
 export SIP_TRUNK_USERNAME="${SIP_TRUNK_USERNAME:-replace-me}"
 export SIP_TRUNK_PASSWORD="${SIP_TRUNK_PASSWORD:-replace-me}"
@@ -21,13 +23,15 @@ for name in SIP_TRUNK_PASSWORD EXTENSION_101_PASSWORD EXTENSION_102_PASSWORD; do
 done
 
 cp /opt/spruik/config/asterisk.conf /opt/spruik/config/logger.conf \
-  /opt/spruik/config/modules.conf /opt/spruik/config/rtp.conf /etc/asterisk/
+  /opt/spruik/config/modules.conf /opt/spruik/config/rtp.conf \
+  /opt/spruik/config/musiconhold.conf /etc/asterisk/
 
 envsubst '${PBX_LOCAL_NET} ${PBX_ADVERTISED_ADDRESS} ${SIP_TRUNK_HOST} ${SIP_TRUNK_USERNAME} ${SIP_TRUNK_PASSWORD} ${SIP_TRUNK_MATCH_IP} ${EXTENSION_101_PASSWORD} ${EXTENSION_102_PASSWORD}' \
   < /opt/spruik/config/pjsip.conf.template > /etc/asterisk/pjsip.conf
 
-envsubst '${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
+envsubst '${TIMEZONE} ${RING_SECONDS} ${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
   < /opt/spruik/config/extensions.conf.template > /etc/asterisk/extensions.conf
 
 chmod 0600 /etc/asterisk/pjsip.conf
+/usr/local/bin/generate-static-prompts.sh
 exec "$@"

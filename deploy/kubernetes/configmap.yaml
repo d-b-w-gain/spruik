@@ -6,12 +6,21 @@ metadata:
 data:
   PBX_LOCAL_NET: 192.0.2.0/24
   PBX_ADVERTISED_ADDRESS: 192.0.2.10
+  TIMEZONE: Australia/Sydney
+  RING_SECONDS: "35"
   SIP_TRUNK_HOST: sip.example.invalid
   SIP_TRUNK_USERNAME: replace-me
   SIP_TRUNK_MATCH_IP: 198.51.100.10
   KOKORO_URL: http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech
   STANDARD_GREETING: Thanks for calling Example Engineering. Please hold while we connect your call.
   STANDARD_VOICE: af_heart
+  HOLD_PROMO: While we connect your call, Example Engineering provides practical design and technical services. Thanks for holding. We will be with you shortly.
+  HOLD_VOICE: af_heart
+  VOICEMAIL_GREETING: Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.
+  VOICEMAIL_VOICE: af_heart
+  THANK_YOU_MESSAGE: Thank you. Your message has been recorded.
+  THANK_YOU_VOICE: af_heart
+  SIGNAL_API_URL: ""
   VIP_NUMBER_LOCAL: "0400000000"
   VIP_NUMBER_INTL: "61400000000"
   VIP_GREETING: Good {daypart}, special caller. Welcome to Example Engineering. Please hold while we connect you.

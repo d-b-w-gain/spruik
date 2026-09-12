@@ -34,6 +34,9 @@ spec:
             - name: sip
               containerPort: 5060
               protocol: UDP
+            - name: rtp-start
+              containerPort: 10000
+              protocol: UDP
           readinessProbe:
             exec:
               command: ["/usr/sbin/asterisk", "-rx", "core show uptime"]
@@ -61,10 +64,19 @@ spec:
           volumeMounts:
             - name: sounds
               mountPath: /var/lib/asterisk/sounds/custom
+            - name: moh
+              mountPath: /var/lib/asterisk/moh/spruik
+            - name: voicemail
+              mountPath: /var/spool/asterisk/voicemail
             - name: run
               mountPath: /var/run/asterisk
       volumes:
         - name: sounds
           emptyDir: {}
+        - name: moh
+          emptyDir: {}
+        - name: voicemail
+          persistentVolumeClaim:
+            claimName: spruik-voicemail
         - name: run
           emptyDir: {}

@@ -7,12 +7,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY config/ /opt/spruik/config/
-COPY scripts/entrypoint.sh scripts/generate-greeting.sh /usr/local/bin/
+COPY scripts/entrypoint.sh scripts/generate-greeting.sh scripts/generate-static-prompts.sh scripts/send-voicemail-signal.sh /usr/local/bin/
 
-RUN chmod 0555 /usr/local/bin/entrypoint.sh /usr/local/bin/generate-greeting.sh \
-    && mkdir -p /etc/asterisk /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds/custom /var/run/asterisk \
+RUN chmod 0555 /usr/local/bin/entrypoint.sh /usr/local/bin/generate-greeting.sh /usr/local/bin/generate-static-prompts.sh /usr/local/bin/send-voicemail-signal.sh \
+    && mkdir -p /etc/asterisk /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds/custom /var/lib/asterisk/moh/spruik /var/spool/asterisk/voicemail /var/run/asterisk \
     && ln -sf /usr/local/bin/generate-greeting.sh /var/lib/asterisk/agi-bin/generate-greeting.sh \
-    && chown -R 1000:999 /etc/asterisk /var/lib/asterisk /var/run/asterisk
+    && ln -sf /usr/local/bin/send-voicemail-signal.sh /var/lib/asterisk/agi-bin/send-voicemail-signal.sh \
+    && chown -R 1000:999 /etc/asterisk /var/lib/asterisk /var/spool/asterisk /var/run/asterisk
 
 USER 1000:999
 

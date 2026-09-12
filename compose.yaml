@@ -5,6 +5,8 @@ services:
     environment:
       PBX_LOCAL_NET: ${PBX_LOCAL_NET:-192.0.2.0/24}
       PBX_ADVERTISED_ADDRESS: ${PBX_ADVERTISED_ADDRESS:-192.0.2.10}
+      TIMEZONE: ${TIMEZONE:-Australia/Sydney}
+      RING_SECONDS: ${RING_SECONDS:-35}
       SIP_TRUNK_HOST: ${SIP_TRUNK_HOST:-sip.example.invalid}
       SIP_TRUNK_USERNAME: ${SIP_TRUNK_USERNAME:-replace-me}
       SIP_TRUNK_PASSWORD: ${SIP_TRUNK_PASSWORD:-replace-me}
@@ -14,6 +16,15 @@ services:
       KOKORO_URL: ${KOKORO_URL:-http://host.docker.internal:8880/v1/audio/speech}
       STANDARD_GREETING: ${STANDARD_GREETING:-Thanks for calling Example Engineering. Please hold while we connect your call.}
       STANDARD_VOICE: ${STANDARD_VOICE:-af_heart}
+      HOLD_PROMO: ${HOLD_PROMO:-While we connect your call, Example Engineering provides practical design and technical services. Thanks for holding. We will be with you shortly.}
+      HOLD_VOICE: ${HOLD_VOICE:-af_heart}
+      VOICEMAIL_GREETING: ${VOICEMAIL_GREETING:-Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.}
+      VOICEMAIL_VOICE: ${VOICEMAIL_VOICE:-af_heart}
+      THANK_YOU_MESSAGE: ${THANK_YOU_MESSAGE:-Thank you. Your message has been recorded.}
+      THANK_YOU_VOICE: ${THANK_YOU_VOICE:-af_heart}
+      SIGNAL_API_URL: ${SIGNAL_API_URL:-}
+      SIGNAL_NUMBER: ${SIGNAL_NUMBER:-}
+      SIGNAL_RECIPIENT: ${SIGNAL_RECIPIENT:-}
       VIP_NUMBER_LOCAL: ${VIP_NUMBER_LOCAL:-0400000000}
       VIP_NUMBER_INTL: ${VIP_NUMBER_INTL:-61400000000}
       VIP_GREETING: ${VIP_GREETING:-Good {daypart}, special caller. Welcome to Example Engineering. Please hold while we connect you.}
@@ -25,7 +36,11 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - pabx-sounds:/var/lib/asterisk/sounds/custom
+      - pabx-moh:/var/lib/asterisk/moh/spruik
+      - pabx-voicemail:/var/spool/asterisk/voicemail
     restart: unless-stopped
 
 volumes:
   pabx-sounds:
+  pabx-moh:
+  pabx-voicemail:
