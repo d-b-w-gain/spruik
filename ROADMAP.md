@@ -13,11 +13,14 @@
 
 ## Management experience
 
-- [ ] Show trunk registration, endpoint reachability, active calls, and recent call outcomes.
-- [ ] Edit and preview standard, promotional, voicemail, and caller-specific greetings.
+- [x] Show trunk registration, endpoint reachability, and active channel count.
+- [ ] Show recent call outcomes without exposing raw caller data in logs or metrics.
+- [x] Edit and preview standard, promotional, voicemail, and confirmation greetings.
 - [ ] Manage caller profiles without storing personal contacts in Git.
-- [ ] Browse, play, download, retry, and delete retained voicemails.
-- [ ] Protect management access and keep credentials out of browser storage and logs.
+- [x] Browse, play, download, and delete retained voicemails.
+- [ ] Retry retained voicemails from the UI with delivery history.
+- [x] Protect management access and keep credentials out of browser storage and logs.
+- [x] Trigger internal welcome, hold, and voicemail test calls.
 
 ## Mobile endpoint
 
@@ -32,4 +35,3 @@
 - [ ] Spam screening and caller intent collection.
 - [ ] Optional recording with an explicit consent policy.
 - [ ] Monitoring, alerts, retention rules, and call-quality metrics.
-

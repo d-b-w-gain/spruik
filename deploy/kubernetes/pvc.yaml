@@ -9,4 +9,15 @@ spec:
   resources:
     requests:
       storage: 1Gi
-
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spruik-data
+  namespace: telephony
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi

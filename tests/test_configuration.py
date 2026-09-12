@@ -47,6 +47,14 @@ class SpruikConfigurationTests(unittest.TestCase):
         self.assertNotIn("SIGNAL_NUMBER:", configmap)
         self.assertIn("SIGNAL_NUMBER:", secret_example)
 
+    def test_management_token_is_secret_and_ui_data_is_persistent(self):
+        configmap = self.read("deploy/kubernetes/configmap.yaml")
+        secret_example = self.read("deploy/kubernetes/secret.example.yaml")
+        deployment = self.read("deploy/kubernetes/deployment.yaml")
+        self.assertNotIn("SPRUIK_ADMIN_TOKEN:", configmap)
+        self.assertIn("SPRUIK_ADMIN_TOKEN:", secret_example)
+        self.assertIn("claimName: spruik-data", deployment)
+
     def test_old_project_identity_is_gone(self):
         checked_files = [
             "Dockerfile",
@@ -63,4 +71,3 @@ class SpruikConfigurationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

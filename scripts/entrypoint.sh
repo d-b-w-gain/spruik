@@ -34,4 +34,9 @@ envsubst '${TIMEZONE} ${RING_SECONDS} ${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
 
 chmod 0600 /etc/asterisk/pjsip.conf
 /usr/local/bin/generate-static-prompts.sh
+if [ -n "${SPRUIK_ADMIN_TOKEN:-}" ]; then
+  python3 -u /opt/spruik/manager/server.py &
+else
+  echo "SPRUIK_ADMIN_TOKEN is empty; management UI disabled"
+fi
 exec "$@"

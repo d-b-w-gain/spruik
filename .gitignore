@@ -4,4 +4,5 @@
 *.wav
 *.mp3
 deploy/kubernetes/secret.yaml
-
+__pycache__/
+*.py[cod]

@@ -4,6 +4,21 @@ set -eu
 kokoro_url="${KOKORO_URL:-http://host.docker.internal:8880/v1/audio/speech}"
 sounds_dir=/var/lib/asterisk/sounds/custom
 moh_dir=/var/lib/asterisk/moh/spruik
+settings_file="${SPRUIK_SETTINGS_FILE:-/var/lib/spruik/settings.json}"
+
+configured_value() {
+  prompt_name="$1"
+  field_name="$2"
+  fallback="$3"
+  if [ -s "$settings_file" ]; then
+    saved="$(jq -r --arg prompt "$prompt_name" --arg field "$field_name" '.[$prompt][$field] // empty' "$settings_file" 2>/dev/null || true)"
+    if [ -n "$saved" ]; then
+      printf '%s' "$saved"
+      return
+    fi
+  fi
+  printf '%s' "$fallback"
+}
 
 generate_prompt() {
   prompt_name="$1"
@@ -26,19 +41,18 @@ generate_prompt() {
 
 mkdir -p "$sounds_dir" "$moh_dir"
 generate_prompt standard-greeting \
-  "${STANDARD_GREETING:-Thanks for calling. Please hold while we connect your call.}" \
-  "${STANDARD_VOICE:-af_heart}" \
+  "$(configured_value standard text "${STANDARD_GREETING:-Thanks for calling. Please hold while we connect your call.}")" \
+  "$(configured_value standard voice "${STANDARD_VOICE:-af_heart}")" \
   "$sounds_dir/standard-greeting.sln24"
 generate_prompt hold-promotion \
-  "${HOLD_PROMO:-While we connect your call, thanks for holding. We will be with you shortly.}" \
-  "${HOLD_VOICE:-af_heart}" \
+  "$(configured_value hold text "${HOLD_PROMO:-While we connect your call, thanks for holding. We will be with you shortly.}")" \
+  "$(configured_value hold voice "${HOLD_VOICE:-af_heart}")" \
   "$moh_dir/hold-promotion.sln24"
 generate_prompt voicemail-greeting \
-  "${VOICEMAIL_GREETING:-Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.}" \
-  "${VOICEMAIL_VOICE:-af_heart}" \
+  "$(configured_value voicemail text "${VOICEMAIL_GREETING:-Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.}")" \
+  "$(configured_value voicemail voice "${VOICEMAIL_VOICE:-af_heart}")" \
   "$sounds_dir/voicemail-greeting.sln24"
 generate_prompt thank-you \
-  "${THANK_YOU_MESSAGE:-Thank you. Your message has been recorded.}" \
-  "${THANK_YOU_VOICE:-af_heart}" \
+  "$(configured_value thank_you text "${THANK_YOU_MESSAGE:-Thank you. Your message has been recorded.}")" \
+  "$(configured_value thank_you voice "${THANK_YOU_VOICE:-af_heart}")" \
   "$sounds_dir/thank-you.sln24"
-

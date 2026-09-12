@@ -37,6 +37,9 @@ spec:
             - name: rtp-start
               containerPort: 10000
               protocol: UDP
+            - name: manager
+              containerPort: 8088
+              protocol: TCP
           readinessProbe:
             exec:
               command: ["/usr/sbin/asterisk", "-rx", "core show uptime"]
@@ -68,6 +71,8 @@ spec:
               mountPath: /var/lib/asterisk/moh/spruik
             - name: voicemail
               mountPath: /var/spool/asterisk/voicemail
+            - name: data
+              mountPath: /var/lib/spruik
             - name: run
               mountPath: /var/run/asterisk
       volumes:
@@ -78,5 +83,8 @@ spec:
         - name: voicemail
           persistentVolumeClaim:
             claimName: spruik-voicemail
+        - name: data
+          persistentVolumeClaim:
+            claimName: spruik-data
         - name: run
           emptyDir: {}

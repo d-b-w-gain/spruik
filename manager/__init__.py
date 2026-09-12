@@ -1,0 +1,2 @@
+"""Spruik management service."""
+

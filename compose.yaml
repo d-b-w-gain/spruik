@@ -25,6 +25,8 @@ services:
       SIGNAL_API_URL: ${SIGNAL_API_URL:-}
       SIGNAL_NUMBER: ${SIGNAL_NUMBER:-}
       SIGNAL_RECIPIENT: ${SIGNAL_RECIPIENT:-}
+      SPRUIK_ADMIN_TOKEN: ${SPRUIK_ADMIN_TOKEN:-}
+      SPRUIK_MANAGER_PORT: "8088"
       VIP_NUMBER_LOCAL: ${VIP_NUMBER_LOCAL:-0400000000}
       VIP_NUMBER_INTL: ${VIP_NUMBER_INTL:-61400000000}
       VIP_GREETING: ${VIP_GREETING:-Good {daypart}, special caller. Welcome to Example Engineering. Please hold while we connect you.}
@@ -32,15 +34,18 @@ services:
     ports:
       - "5060:5060/udp"
       - "10000-10199:10000-10199/udp"
+      - "${SPRUIK_MANAGER_HOST:-127.0.0.1}:${SPRUIK_MANAGER_PORT:-8088}:8088/tcp"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - pabx-sounds:/var/lib/asterisk/sounds/custom
       - pabx-moh:/var/lib/asterisk/moh/spruik
       - pabx-voicemail:/var/spool/asterisk/voicemail
+      - pabx-data:/var/lib/spruik
     restart: unless-stopped
 
 volumes:
   pabx-sounds:
   pabx-moh:
   pabx-voicemail:
+  pabx-data:

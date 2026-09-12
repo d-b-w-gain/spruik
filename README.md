@@ -57,6 +57,26 @@ Signal delivery is optional. Set `SIGNAL_API_URL`, `SIGNAL_NUMBER`, and
 are unset or delivery fails, Spruik retains the WAV file on the persistent
 `pabx-voicemail` volume.
 
+## Management UI
+
+Set `SPRUIK_ADMIN_TOKEN` to a long random value to enable the built-in manager.
+With Compose it listens at `http://127.0.0.1:8088` by default. Enter the token
+when the page opens; it is kept only in page memory and is not written to local
+or session storage.
+
+The first management release provides:
+
+- Sanitised trunk, endpoint, and active-channel status.
+- Kokoro prompt editing and in-browser audio preview.
+- Live installation of standard, promotional, voicemail, and confirmation prompts.
+- Internal welcome, hold, and voicemail test calls to extension `101`.
+- Playback and deletion of retained voicemail recordings.
+
+Set `SPRUIK_MANAGER_HOST=0.0.0.0` only when another device needs access. The
+manager has no TLS terminator of its own, so remote access should go through a
+private VPN or authenticated HTTPS reverse proxy. Kubernetes uses host networking
+and exposes port `8088` on the node whenever the manager is enabled.
+
 ## Kubernetes
 
 Build and publish the image, replace the example image in
@@ -105,9 +125,10 @@ Docker host; in Kubernetes it defaults to the companion service in namespace
 
 ## Project status
 
-The portable PBX core is implemented. The management UI, retained-message retry
-worker, release signing, and reliable iPhone lock-screen endpoint remain active
-work. See [ROADMAP.md](ROADMAP.md) for the bounded v1 checklist.
+The portable PBX core and first management UI are implemented. Retained-message
+retry, caller-profile management, release signing, recent-call history, and a
+reliable iPhone lock-screen endpoint remain active work. See
+[ROADMAP.md](ROADMAP.md) for the bounded v1 checklist.
 
 ## License
 
