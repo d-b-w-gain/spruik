@@ -57,6 +57,10 @@ Signal delivery is optional. Set `SIGNAL_API_URL`, `SIGNAL_NUMBER`, and
 are unset or delivery fails, Spruik retains the WAV file on the persistent
 `pabx-voicemail` volume.
 
+Experimental Signal voice-call tooling and the pinned signal-cli server upgrade
+are documented in `deploy/signal-call-tunnel/README.md` and
+`deploy/signal-cli/README.md`.
+
 ## Management UI
 
 Set `SPRUIK_ADMIN_TOKEN` to a long random value to enable the built-in manager.
