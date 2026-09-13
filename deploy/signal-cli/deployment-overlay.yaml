@@ -26,6 +26,21 @@ spec:
               mountPath: /signal-cli
       containers:
         - name: signal-cli
+          image: ghcr.io/d-b-w-gain/spruik-signal-cli:0.14.8-call-bridge
+          imagePullPolicy: Always
+          env:
+            - name: SIGNAL_CALL_RECIPIENT
+              valueFrom:
+                secretKeyRef:
+                  name: signal-call-bridge
+                  key: recipient
+          ports:
+            - name: bridge-control
+              containerPort: 9091
+              protocol: TCP
+            - name: audiosocket
+              containerPort: 9092
+              protocol: TCP
           volumeMounts:
             - name: signal-cli-bin
               mountPath: /usr/bin/signal-cli-native

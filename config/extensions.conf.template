@@ -6,6 +6,8 @@ autofallthrough=yes
 [globals]
 RING_SECONDS=${RING_SECONDS}
 TIMEZONE=${TIMEZONE}
+SIGNAL_CALL_CONTROL_URL=${SIGNAL_CALL_CONTROL_URL}
+SIGNAL_CALL_AUDIO_SERVICE=${SIGNAL_CALL_AUDIO_SERVICE}
 
 [from-trunk]
 exten => s,1,Goto(incoming,1)
@@ -16,7 +18,7 @@ exten => incoming,1,NoOp(Incoming trunk call)
   same => n,Set(NORMALIZED_CALLER=${FILTER(0-9,${CALLERID(num)})})
   same => n,Set(DESKTOP_CONTACTS=${PJSIP_DIAL_CONTACTS(101)})
   same => n,Set(MOBILE_CONTACTS=${PJSIP_DIAL_CONTACTS(102)})
-  same => n,GotoIf($[${LEN(${DESKTOP_CONTACTS})} = 0 & ${LEN(${MOBILE_CONTACTS})} = 0]?voicemail,s,1)
+  same => n,GotoIf($[${LEN(${DESKTOP_CONTACTS})} = 0 & ${LEN(${MOBILE_CONTACTS})} = 0]?signal-route,s,1)
   same => n,GotoIf($["${NORMALIZED_CALLER}" = "${VIP_NUMBER_LOCAL}" | "${NORMALIZED_CALLER}" = "${VIP_NUMBER_INTL}"]?vip,1)
   same => n,Goto(standard,1)
 
@@ -32,8 +34,23 @@ exten => standard,1,NoOp(Standard caller)
 [ring-endpoints]
 exten => s,1,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(spruik-promo))
   same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
-  same => n,Goto(voicemail,s,1)
+  same => n,Goto(signal-route,s,1)
   same => n(done),Hangup()
+
+[signal-route]
+exten => s,1,NoOp(Calling Signal mobile endpoint)
+  same => n,GotoIf($[${LEN(${SIGNAL_CALL_CONTROL_URL})} = 0 | ${LEN(${SIGNAL_CALL_AUDIO_SERVICE})} = 0]?voicemail,s,1)
+  same => n,ExecIf($["${CHANNEL(state)}" = "Up"]?StartMusicOnHold(spruik-promo))
+  same => n,Ringing()
+  same => n,Set(CURLOPT(conntimeout)=5)
+  same => n,Set(CURLOPT(httptimeout)=50)
+  same => n,Set(SIGNAL_RESULT=${CURL(${SIGNAL_CALL_CONTROL_URL})})
+  same => n,StopMusicOnHold()
+  same => n,GotoIf($["${SIGNAL_RESULT}" != "connected"]?voicemail,s,1)
+  same => n,Answer()
+  same => n,Set(SIGNAL_AUDIO_UUID=${UUID()})
+  same => n,AudioSocket(${SIGNAL_AUDIO_UUID},${SIGNAL_CALL_AUDIO_SERVICE})
+  same => n,Hangup()
 
 [voicemail]
 exten => s,1,NoOp(Recording voicemail from ${CALLERID(all)})

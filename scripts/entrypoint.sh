@@ -11,6 +11,8 @@ export SIP_TRUNK_PASSWORD="${SIP_TRUNK_PASSWORD:-replace-me}"
 export SIP_TRUNK_MATCH_IP="${SIP_TRUNK_MATCH_IP:-198.51.100.10}"
 export EXTENSION_101_PASSWORD="${EXTENSION_101_PASSWORD:-replace-me}"
 export EXTENSION_102_PASSWORD="${EXTENSION_102_PASSWORD:-replace-me}"
+export SIGNAL_CALL_CONTROL_URL="${SIGNAL_CALL_CONTROL_URL:-}"
+export SIGNAL_CALL_AUDIO_SERVICE="${SIGNAL_CALL_AUDIO_SERVICE:-}"
 export VIP_NUMBER_LOCAL="${VIP_NUMBER_LOCAL:-0400000000}"
 export VIP_NUMBER_INTL="${VIP_NUMBER_INTL:-61400000000}"
 
@@ -29,7 +31,7 @@ cp /opt/spruik/config/asterisk.conf /opt/spruik/config/logger.conf \
 envsubst '${PBX_LOCAL_NET} ${PBX_ADVERTISED_ADDRESS} ${SIP_TRUNK_HOST} ${SIP_TRUNK_USERNAME} ${SIP_TRUNK_PASSWORD} ${SIP_TRUNK_MATCH_IP} ${EXTENSION_101_PASSWORD} ${EXTENSION_102_PASSWORD}' \
   < /opt/spruik/config/pjsip.conf.template > /etc/asterisk/pjsip.conf
 
-envsubst '${TIMEZONE} ${RING_SECONDS} ${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
+envsubst '${TIMEZONE} ${RING_SECONDS} ${SIGNAL_CALL_CONTROL_URL} ${SIGNAL_CALL_AUDIO_SERVICE} ${VIP_NUMBER_LOCAL} ${VIP_NUMBER_INTL}' \
   < /opt/spruik/config/extensions.conf.template > /etc/asterisk/extensions.conf
 
 chmod 0600 /etc/asterisk/pjsip.conf

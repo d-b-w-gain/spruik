@@ -20,8 +20,9 @@ SIGNAL_CALL_TUNNEL_REF=69034124090dc6ee9591b0f208f105d034a172c2 \
 ```
 
 The Linux tunnel uses PulseAudio virtual devices. `pulse-client.conf` points the
-tunnel at a private PulseAudio socket; production deployment still needs a
-supervised PulseAudio process and an Asterisk-to-PulseAudio media bridge.
+tunnel at a private PulseAudio socket. The Spruik signal-cli image supervises
+PulseAudio and `signal-audiosocket-bridge.py`, which translates Asterisk's 8 kHz
+AudioSocket stream to the tunnel's 48 kHz virtual devices in both directions.
 
 `signal-self-call.py` is a diagnostic client. It subscribes to call events,
 places a short call, reports only redacted call state, and hangs up after the
@@ -47,5 +48,6 @@ so it can be reviewed without Spruik-specific code.
 The working topology uses two distinct Signal identities: one for Spruik and
 one for the receiving phone. With signal-cli 0.14.8 and the tunnel fix above,
 the outgoing call reaches `CONNECTED` when answered by a linked receiving
-device. The remaining production work is to supervise PulseAudio and bridge the
-PBX media into the tunnel.
+device. Asterisk keeps the public caller ringing while Signal rings, attaches
+AudioSocket after the Signal answer, and falls back to voicemail after a decline
+or timeout.

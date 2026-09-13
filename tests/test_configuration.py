@@ -9,20 +9,23 @@ class SpruikConfigurationTests(unittest.TestCase):
     def read(self, relative_path: str) -> str:
         return (ROOT / relative_path).read_text(encoding="utf-8")
 
-    def test_unavailable_endpoints_go_directly_to_voicemail(self):
+    def test_unavailable_endpoints_try_signal_before_voicemail(self):
         dialplan = self.read("config/extensions.conf.template")
         self.assertIn("PJSIP_DIAL_CONTACTS(101)", dialplan)
         self.assertIn("PJSIP_DIAL_CONTACTS(102)", dialplan)
+        self.assertIn("?signal-route,s,1", dialplan)
+        self.assertIn("AudioSocket(${SIGNAL_AUDIO_UUID}", dialplan)
         self.assertIn("?voicemail,s,1", dialplan)
 
-    def test_unsuccessful_ring_attempts_fall_back_to_voicemail(self):
+    def test_unsuccessful_sip_and_signal_attempts_fall_back_to_voicemail(self):
         dialplan = self.read("config/extensions.conf.template")
         self.assertIn(
             "Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(spruik-promo))",
             dialplan,
         )
         self.assertIn('${DIALSTATUS}" = "ANSWER', dialplan)
-        self.assertIn("Goto(voicemail,s,1)", dialplan)
+        self.assertIn("Goto(signal-route,s,1)", dialplan)
+        self.assertIn('${SIGNAL_RESULT}" != "connected', dialplan)
 
     def test_voicemail_does_not_depend_on_a_stock_beep_file(self):
         dialplan = self.read("config/extensions.conf.template")

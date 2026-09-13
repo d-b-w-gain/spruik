@@ -1,0 +1,35 @@
+name: Signal CLI call bridge image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/signal-cli-image.yml
+      - deploy/signal-cli/**
+      - deploy/signal-call-tunnel/pulse-client.conf
+      - scripts/signal-audiosocket-bridge.py
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/signal-cli/Dockerfile
+          push: true
+          tags: ghcr.io/d-b-w-gain/spruik-signal-cli:0.14.8-call-bridge
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

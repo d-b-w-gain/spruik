@@ -21,6 +21,8 @@ data:
   THANK_YOU_MESSAGE: Thank you. Your message has been recorded.
   THANK_YOU_VOICE: af_heart
   SIGNAL_API_URL: ""
+  SIGNAL_CALL_CONTROL_URL: ""
+  SIGNAL_CALL_AUDIO_SERVICE: ""
   VIP_NUMBER_LOCAL: "0400000000"
   VIP_NUMBER_INTL: "61400000000"
   VIP_GREETING: Good {daypart}, special caller. Welcome to Example Engineering. Please hold while we connect you.
