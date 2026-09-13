@@ -20,7 +20,8 @@ overlay:
 
 ```sh
 kubectl -n cnc-controller create secret generic signal-call-bridge \
-  --from-literal=recipient='+61000000000'
+  --from-literal=account='+61000000000' \
+  --from-literal=recipient='+61000000001'
 ```
 
 For a cluster that already runs the community REST image, the deployment overlay

@@ -1,7 +1,10 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
 import socket
 import unittest
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +17,25 @@ SPEC.loader.exec_module(BRIDGE)
 
 
 class SignalAudioSocketBridgeTests(unittest.TestCase):
+    def test_multiple_accounts_require_explicit_sender(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = json.dumps(["sender", "recipient"]).encode()
+        with patch.object(BRIDGE.urllib.request, "urlopen", return_value=response):
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "multiple accounts"):
+                    BRIDGE.get_account()
+
+    def test_configured_sender_is_selected_from_multiple_accounts(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = json.dumps(["sender", "recipient"]).encode()
+        with patch.object(BRIDGE.urllib.request, "urlopen", return_value=response):
+            with patch.dict(os.environ, {"SIGNAL_CALL_ACCOUNT": "sender"}, clear=True):
+                self.assertEqual("sender", BRIDGE.get_account())
+
     def test_extract_call_combines_rpc_result_and_event(self):
         message = {
             "result": {"callId": 123},

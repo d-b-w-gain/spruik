@@ -29,6 +29,11 @@ spec:
           image: ghcr.io/d-b-w-gain/spruik-signal-cli:0.14.8-call-bridge
           imagePullPolicy: Always
           env:
+            - name: SIGNAL_CALL_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: signal-call-bridge
+                  key: account
             - name: SIGNAL_CALL_RECIPIENT
               valueFrom:
                 secretKeyRef:

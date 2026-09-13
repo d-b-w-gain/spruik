@@ -28,13 +28,23 @@ def get_account():
         accounts = json.load(response)
     if not accounts:
         raise RuntimeError("No signal-cli account is registered")
-    first = accounts[0]
-    if isinstance(first, str):
-        return first
-    for key in ("number", "account"):
-        if first.get(key):
-            return first[key]
-    raise RuntimeError("The account endpoint returned an unknown format")
+    account_ids = []
+    for account in accounts:
+        if isinstance(account, str):
+            account_ids.append(account)
+            continue
+        for key in ("number", "account"):
+            if account.get(key):
+                account_ids.append(account[key])
+                break
+    configured = os.environ.get("SIGNAL_CALL_ACCOUNT", "")
+    if configured:
+        if configured not in account_ids:
+            raise RuntimeError("SIGNAL_CALL_ACCOUNT is not registered in signal-cli")
+        return configured
+    if len(account_ids) == 1:
+        return account_ids[0]
+    raise RuntimeError("SIGNAL_CALL_ACCOUNT is required when multiple accounts exist")
 
 
 def extract_call(message):
