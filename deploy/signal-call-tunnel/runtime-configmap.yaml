@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signal-call-bridge-runtime
+  namespace: cnc-controller
+data:
+  signal-audiosocket-bridge.conf: |
+    [program:signal-audiosocket-bridge]
+    command=/bin/sh -c 'export SIGNAL_CALL_ACCOUNT="$(cat /run/secrets/signal-call-bridge/account)"; export SIGNAL_CALL_RECIPIENT="$(cat /run/secrets/signal-call-bridge/recipient)"; exec /usr/bin/python3 /usr/local/bin/signal-audiosocket-bridge.py'
+    autostart=true
+    autorestart=true
+    startretries=60
+    startsecs=2
+    priority=1000
+    user=signal-api
+    redirect_stderr=true
+    stdout_logfile=/var/log/signal-audiosocket-bridge.log
+    stdout_logfile_maxbytes=10MB
+    stdout_logfile_backups=2
+    environment=PULSE_SERVER="unix:/run/spruik-pulse/native"

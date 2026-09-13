@@ -51,6 +51,19 @@ spec:
               mountPath: /usr/bin/signal-cli-native
               subPath: signal-cli-native
               readOnly: true
+            - name: signal-call-bridge-secret
+              mountPath: /run/secrets/signal-call-bridge
+              readOnly: true
+            - name: signal-call-bridge-supervisor
+              mountPath: /etc/supervisor/conf.d/signal-audiosocket-bridge.conf
+              subPath: signal-audiosocket-bridge.conf
+              readOnly: true
       volumes:
         - name: signal-cli-bin
           emptyDir: {}
+        - name: signal-call-bridge-secret
+          secret:
+            secretName: signal-call-bridge
+        - name: signal-call-bridge-supervisor
+          configMap:
+            name: signal-call-bridge-runtime
