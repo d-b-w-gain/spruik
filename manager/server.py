@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hmac
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
@@ -28,6 +29,23 @@ VOICEMAIL_DIR = Path(
 MANAGER_BIND = os.getenv("SPRUIK_MANAGER_BIND", "0.0.0.0")
 MANAGER_PORT = int(os.getenv("SPRUIK_MANAGER_PORT", "8088"))
 SETTINGS_LOCK = threading.Lock()
+EVENTS_LOCK = threading.Lock()
+SIGNAL_API_URL = os.getenv("SIGNAL_API_URL", "")
+SIGNAL_NUMBER = os.getenv("SIGNAL_NUMBER", "")
+SIGNAL_RECIPIENT = os.getenv("SIGNAL_RECIPIENT", SIGNAL_NUMBER)
+SIGNAL_CALL_CONTROL_URL = os.getenv("SIGNAL_CALL_CONTROL_URL", "")
+DATA_DIR = Path(os.getenv("SPRUIK_DATA_DIR", "/var/lib/spruik"))
+CALL_HISTORY_FILE = DATA_DIR / "call-history.jsonl"
+DELIVERY_HISTORY_FILE = DATA_DIR / "delivery-history.jsonl"
+HEALTH_STATE_FILE = DATA_DIR / "health-state.json"
+HEALTH_ALERTS_ENABLED = os.getenv("SPRUIK_HEALTH_ALERTS_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+HEALTH_INTERVAL_SECONDS = max(
+    15, int(os.getenv("SPRUIK_HEALTH_INTERVAL_SECONDS", "60"))
+)
 
 PROMPTS = {
     "standard": {
@@ -142,7 +160,38 @@ def run_asterisk(command):
     )
 
 
+def check_http(url):
+    if not url:
+        return "disabled"
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return "online" if response.status < 400 else "offline"
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return "offline"
+
+
+def signal_about_url():
+    if not SIGNAL_API_URL:
+        return ""
+    parsed = urllib.parse.urlsplit(SIGNAL_API_URL)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, "/v1/about", "", "")
+    )
+
+
+def signal_bridge_health_url():
+    if not SIGNAL_CALL_CONTROL_URL:
+        return ""
+    parsed = urllib.parse.urlsplit(SIGNAL_CALL_CONTROL_URL)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, "/health", "", "")
+    )
+
+
 def asterisk_status():
+    signal_bridge = check_http(signal_bridge_health_url())
+    signal_messaging = check_http(signal_about_url())
     try:
         registration = run_asterisk("pjsip show registrations")
         contacts = run_asterisk("pjsip show contacts")
@@ -153,6 +202,10 @@ def asterisk_status():
             "trunkRegistered": False,
             "endpoints": {"101": False, "102": False},
             "activeChannels": 0,
+            "signalBridge": signal_bridge,
+            "signalMessaging": signal_messaging,
+            "primaryRoute": "signal",
+            "healthAlerts": HEALTH_ALERTS_ENABLED,
         }
 
     contact_lines = contacts.stdout.splitlines()
@@ -172,7 +225,165 @@ def asterisk_status():
         "activeChannels": len(
             [line for line in channels.stdout.splitlines() if line.strip()]
         ),
+        "signalBridge": signal_bridge,
+        "signalMessaging": signal_messaging,
+        "primaryRoute": "signal",
+        "healthAlerts": HEALTH_ALERTS_ENABLED,
     }
+
+
+def append_event(destination, outcome, route):
+    record = {
+        "timestamp": int(time.time()),
+        "outcome": re.sub(r"[^a-z0-9_-]", "", str(outcome).lower())[:40]
+        or "unknown",
+        "route": re.sub(r"[^a-z0-9_-]", "", str(route).lower())[:40]
+        or "none",
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with EVENTS_LOCK:
+        try:
+            existing = destination.read_text(encoding="utf-8").splitlines()[-199:]
+        except (FileNotFoundError, OSError):
+            existing = []
+        temporary = destination.with_suffix(".tmp")
+        temporary.write_text(
+            "\n".join(existing + [json.dumps(record, separators=(",", ":"))])
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, destination)
+
+
+def read_events(destination, limit=50):
+    try:
+        lines = destination.read_text(encoding="utf-8").splitlines()[-limit:]
+    except (FileNotFoundError, OSError):
+        return []
+    events = []
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        try:
+            timestamp = int(event.get("timestamp", 0))
+        except (TypeError, ValueError):
+            continue
+        events.append(
+            {
+                "timestamp": timestamp,
+                "outcome": str(event.get("outcome", "unknown")),
+                "route": str(event.get("route", "none")),
+            }
+        )
+    return events
+
+
+def recording_delivery_state(recording):
+    metadata = Path(str(recording) + ".delivery.json")
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"attempts": 0, "lastAttempt": None, "lastStatus": "retained"}
+    return {
+        "attempts": max(0, int(value.get("attempts", 0))),
+        "lastAttempt": value.get("lastAttempt"),
+        "lastStatus": str(value.get("lastStatus", "retained")),
+    }
+
+
+def save_delivery_state(recording, attempts, status):
+    metadata = Path(str(recording) + ".delivery.json")
+    metadata.write_text(
+        json.dumps(
+            {
+                "attempts": attempts,
+                "lastAttempt": int(time.time()),
+                "lastStatus": status,
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def signal_payload(message, recording=None):
+    if not SIGNAL_API_URL or not SIGNAL_NUMBER or not SIGNAL_RECIPIENT:
+        raise RuntimeError("Signal delivery is not configured")
+    payload = {
+        "number": SIGNAL_NUMBER,
+        "recipients": [SIGNAL_RECIPIENT],
+        "message": message,
+        "notify_self": SIGNAL_NUMBER == SIGNAL_RECIPIENT,
+    }
+    if recording is not None:
+        encoded = base64.b64encode(recording.read_bytes()).decode("ascii")
+        payload["base64_attachments"] = [
+            f"data:audio/wav;filename={recording.name};base64,{encoded}"
+        ]
+    return payload
+
+
+def send_signal(message, recording=None):
+    request = urllib.request.Request(
+        SIGNAL_API_URL,
+        data=json.dumps(signal_payload(message, recording), separators=(",", ":")).encode(
+            "utf-8"
+        ),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=90) as response:
+        if response.status >= 300:
+            raise RuntimeError(f"Signal returned HTTP {response.status}")
+
+
+def retry_voicemail(recording):
+    state = recording_delivery_state(recording)
+    attempts = state["attempts"] + 1
+    try:
+        send_signal("Retried Spruik voicemail.", recording)
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+        save_delivery_state(recording, attempts, "failed")
+        append_event(DELIVERY_HISTORY_FILE, "retained", "signal")
+        raise
+    Path(str(recording) + ".delivery.json").unlink(missing_ok=True)
+    recording.unlink()
+    append_event(DELIVERY_HISTORY_FILE, "delivered", "signal")
+
+
+def health_monitor():
+    previous = None
+    while True:
+        status = asterisk_status()
+        current = {
+            "trunk": status["trunkRegistered"],
+            "signalVoice": status["signalBridge"],
+            "signalMessages": status["signalMessaging"],
+        }
+        if previous is not None and current != previous:
+            changes = [
+                f"{name}: {previous.get(name)} -> {value}"
+                for name, value in current.items()
+                if previous.get(name) != value
+            ]
+            try:
+                send_signal("Spruik health changed. " + "; ".join(changes))
+            except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+                pass
+        previous = current
+        try:
+            HEALTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            HEALTH_STATE_FILE.write_text(
+                json.dumps(current, separators=(",", ":")) + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+        time.sleep(HEALTH_INTERVAL_SECONDS)
 
 
 def safe_recording(name):
@@ -199,7 +410,7 @@ INDEX_HTML = r"""<!doctype html>
     section { background: #192129; border: 1px solid #2a3640; border-radius: 12px; padding: 18px; margin-top: 18px; }
     input, textarea, select, button { box-sizing: border-box; width: 100%; font: inherit; border-radius: 7px; border: 1px solid #40505e; padding: 9px; background: #0e1419; color: inherit; }
     textarea { min-height: 105px; resize: vertical; } button { cursor: pointer; background: #1e7f62; border: 0; font-weight: 700; }
-    button.secondary { background: #34414c; } button.danger { background: #963e46; width: auto; }
+    button.secondary { background: #34414c; } button.danger { background: #963e46; width: auto; } button.compact { width: auto; margin-left: 6px; }
     label { display: block; margin: 10px 0 5px; color: #b8c3cd; } .actions { display: flex; gap: 8px; margin-top: 10px; }
     .actions button { flex: 1; } .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; margin: 3px; background: #692f36; }
     .pill.ok { background: #176347; } table { width: 100%; border-collapse: collapse; } td, th { text-align: left; border-bottom: 1px solid #33404a; padding: 9px 5px; }
@@ -213,6 +424,7 @@ INDEX_HTML = r"""<!doctype html>
   <main id="app" hidden>
     <section><h2>Status</h2><div id="status">Loading…</div><div class="actions"><button class="secondary" onclick="refresh()">Refresh</button><button class="secondary" onclick="testCall(600)">Test welcome</button><button class="secondary" onclick="testCall(601)">Test hold</button><button class="secondary" onclick="testCall(602)">Test voicemail</button></div></section>
     <section><h2>Messages</h2><div id="voicemails">Loading…</div></section>
+    <section><h2>Recent activity</h2><div id="calls">Loading…</div></section>
     <section><h2>Prompts</h2><div class="grid" id="prompts"></div></section>
     <audio id="player" controls hidden></audio>
   </main>
@@ -227,16 +439,18 @@ async function api(path, options={}) {
 }
 function tell(message, bad=false) { const n=document.getElementById('notice'); n.textContent=message; n.style.color=bad?'#ff8e96':'#62d5a9'; }
 async function connect(){ token=document.getElementById('token').value; try { await api('/api/status'); document.getElementById('login').hidden=true; document.getElementById('app').hidden=false; await refresh(); } catch(e){ tell(e.message,true); } }
-async function refresh(){ try { const [status,prompts,messages]=await Promise.all([(await api('/api/status')).json(),(await api('/api/prompts')).json(),(await api('/api/voicemails')).json()]); renderStatus(status); renderPrompts(prompts); renderMessages(messages); } catch(e){ tell(e.message,true); } }
-function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.asterisk==='online'?'ok':''}">Asterisk ${s.asterisk}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span>`; }
+async function refresh(){ try { const [status,prompts,messages,calls]=await Promise.all([(await api('/api/status')).json(),(await api('/api/prompts')).json(),(await api('/api/voicemails')).json(),(await api('/api/calls')).json()]); renderStatus(status); renderPrompts(prompts); renderMessages(messages); renderCalls(calls); } catch(e){ tell(e.message,true); } }
+function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.signalBridge==='online'?'ok':''}">Signal voice ${s.signalBridge}</span><span class="pill ${s.signalMessaging==='online'?'ok':''}">Signal messages ${s.signalMessaging}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC backup ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile backup ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span><span class="pill ${s.healthAlerts?'ok':''}">Alerts ${s.healthAlerts?'on':'off'}</span>`; }
 function renderPrompts(settings){ const root=document.getElementById('prompts'); root.innerHTML=''; Object.entries(settings).forEach(([name,value])=>{ const card=document.createElement('div'); card.innerHTML=`<h3>${labels[name]}</h3><label>Voice</label><input id="${name}-voice" value="${escapeHtml(value.voice)}"><label>Script</label><textarea id="${name}-text">${escapeHtml(value.text)}</textarea><div class="actions"><button class="secondary" onclick="preview('${name}')">Preview</button><button onclick="savePrompt('${name}')">Save live</button></div>`; root.appendChild(card); }); }
 function escapeHtml(value){ return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function promptBody(name){ return JSON.stringify({voice:document.getElementById(name+'-voice').value,text:document.getElementById(name+'-text').value}); }
 async function preview(name){ try { tell('Generating preview…'); const response=await api('/api/prompts/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:promptBody(name)}); const player=document.getElementById('player'); player.src=URL.createObjectURL(await response.blob()); player.hidden=false; await player.play(); tell('Preview ready.'); } catch(e){ tell(e.message,true); } }
 async function savePrompt(name){ try { tell('Generating and installing prompt…'); await api('/api/prompts/'+name,{method:'PUT',headers:{'Content-Type':'application/json'},body:promptBody(name)}); tell(labels[name]+' updated.'); } catch(e){ tell(e.message,true); } }
 async function testCall(extension){ try { await api('/api/test-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:'101',extension:String(extension)})}); tell('Test call sent to the PC.'); } catch(e){ tell(e.message,true); } }
-function renderMessages(data){ const root=document.getElementById('voicemails'); if(!data.length){ root.innerHTML='<span class="muted">No retained messages.</span>'; return; } root.innerHTML='<table><thead><tr><th>Recorded</th><th>Size</th><th></th></tr></thead><tbody>'+data.map(v=>`<tr><td><a href="#" onclick="playMessage('${v.name}');return false">${new Date(v.modified*1000).toLocaleString()}</a></td><td>${Math.ceil(v.size/1024)} KB</td><td><button class="danger" onclick="deleteMessage('${v.name}')">Delete</button></td></tr>`).join('')+'</tbody></table>'; }
+function renderMessages(data){ const root=document.getElementById('voicemails'); if(!data.length){ root.innerHTML='<span class="muted">No retained messages.</span>'; return; } root.innerHTML='<table><thead><tr><th>Recorded</th><th>Delivery</th><th></th></tr></thead><tbody>'+data.map(v=>`<tr><td><a href="#" onclick="playMessage('${v.name}');return false">${new Date(v.modified*1000).toLocaleString()}</a><div class="muted">${Math.ceil(v.size/1024)} KB</div></td><td>${escapeHtml(v.delivery.lastStatus)}${v.delivery.attempts?' · '+v.delivery.attempts+' attempt'+(v.delivery.attempts===1?'':'s'):''}</td><td><button class="compact" onclick="retryMessage('${v.name}')">Retry Signal</button><button class="danger compact" onclick="deleteMessage('${v.name}')">Delete</button></td></tr>`).join('')+'</tbody></table>'; }
+function renderCalls(data){ const root=document.getElementById('calls'); if(!data.length){ root.innerHTML='<span class="muted">No call outcomes recorded yet.</span>'; return; } root.innerHTML='<table><thead><tr><th>When</th><th>Outcome</th><th>Route</th></tr></thead><tbody>'+data.map(v=>`<tr><td>${new Date(v.timestamp*1000).toLocaleString()}</td><td>${escapeHtml(v.outcome)}</td><td>${escapeHtml(v.route)}</td></tr>`).join('')+'</tbody></table>'; }
 async function playMessage(name){ try { const response=await api('/api/voicemails/'+encodeURIComponent(name)); const player=document.getElementById('player'); player.src=URL.createObjectURL(await response.blob()); player.hidden=false; await player.play(); } catch(e){ tell(e.message,true); } }
+async function retryMessage(name){ try { tell('Retrying Signal delivery…'); await api('/api/voicemails/'+encodeURIComponent(name)+'/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); tell('Voicemail delivered through Signal.'); await refresh(); } catch(e){ tell(e.message,true); await refresh(); } }
 async function deleteMessage(name){ if(!confirm('Delete this retained voicemail?')) return; try { await api('/api/voicemails/'+encodeURIComponent(name),{method:'DELETE'}); tell('Voicemail deleted.'); await refresh(); } catch(e){ tell(e.message,true); } }
 </script>
 </body></html>"""
@@ -317,11 +531,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/voicemails":
             VOICEMAIL_DIR.mkdir(parents=True, exist_ok=True)
             messages = [
-                {"name": item.name, "size": item.stat().st_size, "modified": item.stat().st_mtime}
+                {
+                    "name": item.name,
+                    "size": item.stat().st_size,
+                    "modified": item.stat().st_mtime,
+                    "delivery": recording_delivery_state(item),
+                }
                 for item in sorted(VOICEMAIL_DIR.glob("*.wav"), reverse=True)
                 if item.is_file()
             ]
             self.send_json(200, messages)
+            return
+        if path == "/api/calls":
+            self.send_json(200, read_events(CALL_HISTORY_FILE))
             return
         if path.startswith("/api/voicemails/"):
             name = urllib.parse.unquote(path.rsplit("/", 1)[-1])
@@ -338,6 +560,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         try:
+            if path.startswith("/api/voicemails/") and path.endswith("/retry"):
+                name = urllib.parse.unquote(path.split("/")[-2])
+                recording = safe_recording(name)
+                if recording is None or not recording.is_file():
+                    self.send_json(404, {"error": "Voicemail not found"})
+                    return
+                retry_voicemail(recording)
+                self.send_json(200, {"delivered": True})
+                return
             payload = self.read_json()
             if path == "/api/prompts/preview":
                 text, voice = validate_prompt(payload)
@@ -358,9 +589,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Not found"})
         except (ValueError, json.JSONDecodeError) as error:
             self.send_json(400, {"error": str(error)})
-        except (urllib.error.URLError, TimeoutError) as error:
-            self.send_json(502, {"error": f"Kokoro request failed: {error}"})
-        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
+            service = "Signal" if path.endswith("/retry") else "Kokoro"
+            self.send_json(502, {"error": f"{service} request failed: {error}"})
+        except (OSError, subprocess.SubprocessError) as error:
             self.send_json(500, {"error": str(error)})
 
     def do_PUT(self):
@@ -409,6 +641,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "Voicemail not found"})
             return
         recording.unlink()
+        Path(str(recording) + ".delivery.json").unlink(missing_ok=True)
         self.send_json(200, {"deleted": True})
 
 
@@ -429,5 +662,7 @@ if __name__ == "__main__":
         raise SystemExit("SPRUIK_ADMIN_TOKEN is empty; management UI is disabled")
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     VOICEMAIL_DIR.mkdir(parents=True, exist_ok=True)
+    if HEALTH_ALERTS_ENABLED:
+        threading.Thread(target=health_monitor, daemon=True).start()
     print(f"Spruik manager listening on {MANAGER_BIND}:{MANAGER_PORT}", flush=True)
     ThreadingHTTPServer((MANAGER_BIND, MANAGER_PORT), Handler).serve_forever()

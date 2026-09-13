@@ -61,10 +61,32 @@ PY
 rm -f "$response_file"
 case "$http_code" in
   2??)
+    python3 /usr/local/bin/log-spruik-event.py delivery delivered signal 2>/dev/null || true
+    rm -f "${recording}.delivery.json"
     rm -f "$recording"
     set_agi_variable 1
     ;;
   *)
+    python3 - "$recording" "$http_code" <<'PY'
+import json
+from pathlib import Path
+import sys
+import time
+
+recording, http_status = sys.argv[1:]
+path = Path(recording + ".delivery.json")
+try:
+    previous = json.loads(path.read_text(encoding="utf-8"))
+except (FileNotFoundError, json.JSONDecodeError, OSError):
+    previous = {}
+path.write_text(json.dumps({
+    "attempts": int(previous.get("attempts", 0)) + 1,
+    "lastAttempt": int(time.time()),
+    "lastStatus": "failed",
+    "httpStatus": http_status,
+}, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+    python3 /usr/local/bin/log-spruik-event.py delivery retained signal 2>/dev/null || true
     printf 'VERBOSE "Signal voicemail delivery failed with HTTP status %s; notification retained for retry" 1\n' "$http_code"
     IFS= read -r agi_response || true
     set_agi_variable 0

@@ -1,8 +1,9 @@
 # Spruik
 
-A small Asterisk PABX that registers once with a SIP carrier, rings desktop and
-mobile extensions simultaneously, generates speech with an OpenAI-compatible
-Kokoro endpoint, and delivers unanswered-call recordings through Signal.
+A small Asterisk PABX that registers once with a SIP carrier, uses Signal as its
+primary lock-screen endpoint, keeps SIP endpoints as backup, generates speech
+with an OpenAI-compatible Kokoro endpoint, and delivers unanswered-call
+recordings through Signal.
 
 The example is deliberately sanitized. It contains documentation-only IP
 addresses and fictional telephone numbers, and it never commits passwords.
@@ -10,7 +11,7 @@ addresses and fictional telephone numbers, and it never commits passwords.
 ## What it demonstrates
 
 - One carrier registration shared by multiple SIP handsets.
-- Simultaneous ringing of extensions `101` and `102`.
+- Signal voice first, then SIP extensions `101` and `102` as fallback.
 - Caller-ID normalization for local and international number formats.
 - Ringback while a personalized greeting is generated.
 - Answering only after TTS is ready, then playing 24 kHz signed-linear audio.
@@ -70,16 +71,35 @@ or session storage.
 
 The first management release provides:
 
-- Sanitised trunk, endpoint, and active-channel status.
+- Sanitised trunk, Signal voice/message, endpoint, and active-channel status.
+- Caller-anonymous recent call outcomes.
 - Kokoro prompt editing and in-browser audio preview.
 - Live installation of standard, promotional, voicemail, and confirmation prompts.
 - Internal welcome, hold, and voicemail test calls to extension `101`.
-- Playback and deletion of retained voicemail recordings.
+- Playback, Signal retry, and deletion of retained voicemail recordings.
 
 Set `SPRUIK_MANAGER_HOST=0.0.0.0` only when another device needs access. The
 manager has no TLS terminator of its own, so remote access should go through a
 private VPN or authenticated HTTPS reverse proxy. Kubernetes uses host networking
 and exposes port `8088` on the node whenever the manager is enabled.
+
+Set `SPRUIK_HEALTH_ALERTS_ENABLED=true` to send a Signal message when the SIP
+trunk, Signal message service, or Signal audio bridge changes state. The monitor
+records bounded service state only; it does not include caller identities.
+
+## Encrypted backup
+
+`scripts/backup-spruik.sh` exports the PBX manifests, retained voicemail,
+manager state, and Signal identity state directly into an `age`-encrypted
+archive. It requires an `age` public recipient and refuses to overwrite an
+existing backup:
+
+```sh
+scripts/backup-spruik.sh ./spruik-$(date +%Y%m%d).tar.gz.age age1replace_me
+```
+
+Treat the encrypted archive as sensitive and keep its private key separate from
+the Kubernetes server. No plaintext archive is written.
 
 ## Kubernetes
 
@@ -129,9 +149,9 @@ Docker host; in Kubernetes it defaults to the companion service in namespace
 
 ## Project status
 
-The portable PBX core and first management UI are implemented. Retained-message
-retry, caller-profile management, release signing, recent-call history, and a
-reliable iPhone lock-screen endpoint remain active work. See
+The portable PBX core, Signal lock-screen endpoint, operational status, recent
+call outcomes, and retained-message retry are implemented. Caller-profile
+management and release signing remain active work. See
 [ROADMAP.md](ROADMAP.md) for the bounded v1 checklist.
 
 ## License

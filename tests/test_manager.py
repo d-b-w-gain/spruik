@@ -1,5 +1,6 @@
 from pathlib import Path
 from http.server import ThreadingHTTPServer
+import json
 import subprocess
 import tempfile
 import threading
@@ -49,6 +50,50 @@ class ManagerTests(unittest.TestCase):
     def test_admin_token_is_not_persisted_by_browser_code(self):
         self.assertNotIn("localStorage", server.INDEX_HTML)
         self.assertNotIn("sessionStorage", server.INDEX_HTML)
+
+    def test_event_history_contains_no_caller_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = Path(directory) / "call-history.jsonl"
+            with mock.patch.object(server.time, "time", return_value=1234):
+                server.append_event(history, "answered", "signal")
+            self.assertEqual(
+                server.read_events(history),
+                [{"timestamp": 1234, "outcome": "answered", "route": "signal"}],
+            )
+            self.assertNotIn("caller", history.read_text(encoding="utf-8"))
+
+    def test_retry_delivers_then_removes_retained_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = Path(directory) / "message.wav"
+            recording.write_bytes(b"wave")
+            delivery_history = Path(directory) / "delivery-history.jsonl"
+            with mock.patch.object(
+                server, "DELIVERY_HISTORY_FILE", delivery_history
+            ), mock.patch.object(server, "send_signal") as send:
+                server.retry_voicemail(recording)
+            send.assert_called_once_with("Retried Spruik voicemail.", recording)
+            self.assertFalse(recording.exists())
+            self.assertEqual(
+                server.read_events(delivery_history)[0]["outcome"], "delivered"
+            )
+
+    def test_failed_retry_retains_recording_and_increments_attempts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = Path(directory) / "message.wav"
+            recording.write_bytes(b"wave")
+            delivery_history = Path(directory) / "delivery-history.jsonl"
+            with mock.patch.object(
+                server, "DELIVERY_HISTORY_FILE", delivery_history
+            ), mock.patch.object(
+                server, "send_signal", side_effect=RuntimeError("offline")
+            ):
+                with self.assertRaises(RuntimeError):
+                    server.retry_voicemail(recording)
+            self.assertTrue(recording.exists())
+            metadata = json.loads(
+                Path(str(recording) + ".delivery.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["attempts"], 1)
 
     def test_http_api_requires_the_admin_token(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

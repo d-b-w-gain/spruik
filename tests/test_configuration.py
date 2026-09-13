@@ -9,11 +9,15 @@ class SpruikConfigurationTests(unittest.TestCase):
     def read(self, relative_path: str) -> str:
         return (ROOT / relative_path).read_text(encoding="utf-8")
 
-    def test_unavailable_endpoints_try_signal_before_voicemail(self):
+    def test_signal_is_primary_and_sip_is_the_fallback(self):
         dialplan = self.read("config/extensions.conf.template")
         self.assertIn("PJSIP_DIAL_CONTACTS(101)", dialplan)
         self.assertIn("PJSIP_DIAL_CONTACTS(102)", dialplan)
-        self.assertIn("?signal-route,s,1", dialplan)
+        standard = dialplan.index("exten => standard,1")
+        sip = dialplan.index("[ring-endpoints]")
+        signal = dialplan.index("[signal-route]")
+        self.assertIn("Goto(signal-route,s,1)", dialplan[standard:sip])
+        self.assertIn("?ring-endpoints,s,1", dialplan[signal:])
         self.assertIn("AudioSocket(${SIGNAL_AUDIO_UUID}", dialplan)
         self.assertIn("?voicemail,s,1", dialplan)
 
@@ -23,9 +27,22 @@ class SpruikConfigurationTests(unittest.TestCase):
             "Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(spruik-promo))",
             dialplan,
         )
-        self.assertIn('${DIALSTATUS}" = "ANSWER', dialplan)
+        self.assertIn('${DIALSTATUS}" != "ANSWER', dialplan)
         self.assertIn("Goto(signal-route,s,1)", dialplan)
         self.assertIn('${SIGNAL_RESULT}" != "connected', dialplan)
+
+    def test_call_history_never_passes_caller_identity(self):
+        dialplan = self.read("config/extensions.conf.template")
+        event_lines = [
+            line for line in dialplan.splitlines() if "log-spruik-event.py" in line
+        ]
+        self.assertGreaterEqual(len(event_lines), 3)
+        self.assertTrue(
+            all(
+                "CALLERID" not in line and "NORMALIZED_CALLER" not in line
+                for line in event_lines
+            )
+        )
 
     def test_voicemail_does_not_depend_on_a_stock_beep_file(self):
         dialplan = self.read("config/extensions.conf.template")
@@ -57,6 +74,12 @@ class SpruikConfigurationTests(unittest.TestCase):
         self.assertNotIn("SPRUIK_ADMIN_TOKEN:", configmap)
         self.assertIn("SPRUIK_ADMIN_TOKEN:", secret_example)
         self.assertIn("claimName: spruik-data", deployment)
+
+    def test_backup_is_encrypted_and_refuses_overwrite(self):
+        backup = self.read("scripts/backup-spruik.sh")
+        self.assertIn("age -r", backup)
+        self.assertIn('if [ -e "$output" ]', backup)
+        self.assertNotIn('tar -czf "$output"', backup)
 
     def test_old_project_identity_is_gone(self):
         checked_files = [
