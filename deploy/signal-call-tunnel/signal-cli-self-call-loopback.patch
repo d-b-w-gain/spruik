@@ -1,0 +1,49 @@
+diff --git a/lib/src/main/java/org/asamk/signal/manager/helper/CallManager.java b/lib/src/main/java/org/asamk/signal/manager/helper/CallManager.java
+index 79bc40f..30ebf76 100644
+--- a/lib/src/main/java/org/asamk/signal/manager/helper/CallManager.java
++++ b/lib/src/main/java/org/asamk/signal/manager/helper/CallManager.java
+@@ -177,6 +177,16 @@ public class CallManager implements AutoCloseable {
+             final MessageEnvelope.Call.Offer.Type type,
+             final byte[] opaque
+     ) {
++        final var existingCall = activeCalls.get(callId);
++        if (existingCall != null && existingCall.isOutgoing) {
++            // A call to this account is delivered back to all linked devices,
++            // including the signal-cli device that originated it. Preserve the
++            // outgoing state so another linked device can answer the call.
++            existingCall.selfLoopbackOffer = true;
++            logger.debug("Ignoring looped-back offer for active outgoing call {}", callIdUnsigned(callId));
++            return;
++        }
++
+         if (callEventListeners.isEmpty()) {
+             logger.debug("Ignoring incoming offer for call {}: no call event listeners registered",
+                     callIdUnsigned(callId));
+@@ -307,7 +317,13 @@ public class CallManager implements AutoCloseable {
+         endCall(callId, "remote_hangup");
+     }
+ 
+     public void handleIncomingBusy(final long callId) {
++        final var state = activeCalls.get(callId);
++        if (state != null && state.isOutgoing && state.selfLoopbackOffer) {
++            logger.debug("Ignoring busy response caused by looped-back offer for call {}", callIdUnsigned(callId));
++            return;
++        }
++
+         if (callEventListeners.isEmpty() && !activeCalls.containsKey(callId)) {
+             return;
+         }
+@@ -461,5 +477,5 @@ public class CallManager implements AutoCloseable {
+         var config = mapper.createObjectNode();
+         config.put("call_id", Utils.callIdUnsigned(state.callId));
+         config.put("is_outgoing", state.isOutgoing);
+-        config.put("local_device_id", 1);
++        config.put("local_device_id", account.getDeviceId());
+         return writeJson(config);
+@@ -773,5 +789,6 @@ public class CallManager implements AutoCloseable {
+         volatile Integer deviceId;
+         final boolean isOutgoing;
++        volatile boolean selfLoopbackOffer = false;
+         volatile String inputDeviceName;
+         volatile String outputDeviceName;
+         volatile Process tunnelProcess;

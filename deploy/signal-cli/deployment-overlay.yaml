@@ -1,0 +1,36 @@
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    spec:
+      initContainers:
+        - name: install-signal-cli
+          image: alpine:3.22
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              version=0.14.8
+              archive=/tmp/signal-cli.tar.gz
+              wget -qO "$archive" "https://github.com/AsamK/signal-cli/releases/download/v${version}/signal-cli-${version}-Linux-native.tar.gz"
+              echo "36569af20c709e0c5e6e677b74f50f147b21f3740620b8a7affde70f6027f82a  $archive" | sha256sum -c -
+              tar -xzf "$archive" -C /signal-cli
+              mv /signal-cli/signal-cli /signal-cli/signal-cli-native
+              chmod 0755 /signal-cli/signal-cli-native
+          volumeMounts:
+            - name: signal-cli-bin
+              mountPath: /signal-cli
+      containers:
+        - name: signal-cli
+          volumeMounts:
+            - name: signal-cli-bin
+              mountPath: /usr/bin/signal-cli-native
+              subPath: signal-cli-native
+              readOnly: true
+      volumes:
+        - name: signal-cli-bin
+          emptyDir: {}
