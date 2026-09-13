@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Place a short experimental Signal call to this signal-cli account."""
+"""Place a short experimental Signal call from the configured signal-cli account."""
 
 import json
+import os
 import select
 import socket
 import time
@@ -64,6 +65,7 @@ def safe_status(message):
 
 def main():
     account = get_account()
+    recipient = os.environ.get("SIGNAL_CALL_RECIPIENT", account)
     call_id = None
     deadline = time.monotonic() + RING_SECONDS
 
@@ -83,7 +85,7 @@ def main():
         send(
             stream,
             "startCall",
-            {"account": account, "recipient": account},
+            {"account": account, "recipient": recipient},
             "start-call",
         )
         print(f"Call requested; observing for {RING_SECONDS} seconds", flush=True)
