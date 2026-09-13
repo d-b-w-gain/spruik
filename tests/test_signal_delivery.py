@@ -12,11 +12,11 @@ SCRIPT = ROOT / "scripts" / "send-voicemail-signal.sh"
 
 
 @unittest.skipUnless(
-    os.name == "posix" and shutil.which("sh") and shutil.which("jq") and shutil.which("base64"),
-    "Signal AGI integration test requires POSIX sh, jq, and base64",
+    os.name == "posix" and shutil.which("sh") and shutil.which("python3"),
+    "Signal AGI integration test requires POSIX sh and Python 3",
 )
 class SignalDeliveryTests(unittest.TestCase):
-    def run_delivery(self, http_code: str):
+    def run_delivery(self, http_code: str, with_audio: bool = True):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -24,7 +24,8 @@ class SignalDeliveryTests(unittest.TestCase):
         bin_directory.mkdir()
         capture_file = root / "request.json"
         recording = root / "message.wav"
-        recording.write_bytes(b"RIFF-test-audio")
+        if with_audio:
+            recording.write_bytes(b"RIFF-test-audio")
 
         mock_curl = bin_directory / "curl"
         mock_curl.write_text(
@@ -77,9 +78,15 @@ printf '%s' \"$MOCK_HTTP_CODE\"
         result, recording, _ = self.run_delivery("503")
         self.assertTrue(recording.exists())
         self.assertIn('SET VARIABLE SIGNAL_SENT "0"', result.stdout)
-        self.assertIn("recording retained", result.stdout)
+        self.assertIn("notification retained for retry", result.stdout)
+
+    def test_empty_recording_sends_text_only_missed_call(self):
+        result, recording, request = self.run_delivery("202", with_audio=False)
+        self.assertFalse(recording.exists())
+        self.assertIn('SET VARIABLE SIGNAL_SENT "1"', result.stdout)
+        self.assertIn("no voicemail was recorded", request["message"])
+        self.assertNotIn("base64_attachments", request)
 
 
 if __name__ == "__main__":
     unittest.main()
-

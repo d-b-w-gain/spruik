@@ -16,23 +16,41 @@ set_agi_variable() {
   IFS= read -r agi_response || true
 }
 
-if [ -z "$recording" ] || [ ! -s "$recording" ] || \
-  [ -z "$signal_api_url" ] || [ -z "$signal_number" ] || [ -z "$signal_recipient" ]; then
+if [ -z "$recording" ] || [ -z "$signal_api_url" ] || \
+  [ -z "$signal_number" ] || [ -z "$signal_recipient" ]; then
   set_agi_variable 0
   exit 0
 fi
 
 filename="$(basename "$recording" | tr -cd '0-9A-Za-z._-')"
-message="New Spruik voicemail from ${caller:-unknown caller}."
 response_file="${recording}.signal-response"
-attachment="data:audio/wav;filename=${filename};base64,$(base64 "$recording" | tr -d '\r\n')"
+if [ -s "$recording" ]; then
+  message="New Spruik voicemail from ${caller:-unknown caller}."
+else
+  message="Missed Spruik call from ${caller:-unknown caller}; no voicemail was recorded."
+fi
 
-http_code="$(jq -n \
-  --arg number "$signal_number" \
-  --arg recipient "$signal_recipient" \
-  --arg message "$message" \
-  --arg attachment "$attachment" \
-  '{number:$number, recipients:[$recipient], message:$message, base64_attachments:[$attachment], notify_self:($number == $recipient)}' |
+http_code="$(python3 - "$signal_number" "$signal_recipient" "$message" "$recording" "$filename" <<'PY' |
+import base64
+import json
+from pathlib import Path
+import sys
+
+number, recipient, message, recording, filename = sys.argv[1:]
+payload = {
+    "number": number,
+    "recipients": [recipient],
+    "message": message,
+    "notify_self": number == recipient,
+}
+recording_path = Path(recording)
+if recording_path.is_file() and recording_path.stat().st_size:
+    encoded = base64.b64encode(recording_path.read_bytes()).decode("ascii")
+    payload["base64_attachments"] = [
+        f"data:audio/wav;filename={filename};base64,{encoded}"
+    ]
+json.dump(payload, sys.stdout, separators=(",", ":"))
+PY
   curl --silent --show-error --connect-timeout 5 --max-time 90 \
     -H 'Content-Type: application/json' \
     --data-binary @- \
@@ -47,9 +65,8 @@ case "$http_code" in
     set_agi_variable 1
     ;;
   *)
-    printf 'VERBOSE "Signal voicemail delivery failed with HTTP status %s; recording retained" 1\n' "$http_code"
+    printf 'VERBOSE "Signal voicemail delivery failed with HTTP status %s; notification retained for retry" 1\n' "$http_code"
     IFS= read -r agi_response || true
     set_agi_variable 0
     ;;
 esac
-
