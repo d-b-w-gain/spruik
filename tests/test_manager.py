@@ -95,6 +95,57 @@ class ManagerTests(unittest.TestCase):
             )
             self.assertEqual(metadata["attempts"], 1)
 
+    def test_automatic_retry_uses_bounded_backoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = Path(directory) / "message.wav"
+            recording.write_bytes(b"wave")
+            with mock.patch.object(server, "AUTO_RETRY_DELAYS", (60, 300, 900)), mock.patch.object(
+                server, "AUTO_RETRY_MAX_ATTEMPTS", 4
+            ):
+                self.assertFalse(
+                    server.automatic_retry_due(
+                        recording,
+                        {"attempts": 1, "lastAttempt": 1000},
+                        now=1059,
+                    )
+                )
+                self.assertTrue(
+                    server.automatic_retry_due(
+                        recording,
+                        {"attempts": 1, "lastAttempt": 1000},
+                        now=1060,
+                    )
+                )
+                self.assertTrue(
+                    server.automatic_retry_due(
+                        recording,
+                        {"attempts": 2, "lastAttempt": 1000},
+                        now=1300,
+                    )
+                )
+                self.assertFalse(
+                    server.automatic_retry_due(
+                        recording,
+                        {"attempts": 4, "lastAttempt": 0},
+                        now=999999,
+                    )
+                )
+
+    def test_manual_retry_remains_available_after_exhaustion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = Path(directory) / "message.wav"
+            recording.write_bytes(b"wave")
+            server.save_delivery_state(recording, 8, "exhausted", last_attempt=1000)
+            delivery_history = Path(directory) / "delivery-history.jsonl"
+            with mock.patch.object(
+                server, "DELIVERY_HISTORY_FILE", delivery_history
+            ), mock.patch.object(server, "send_signal"):
+                server.retry_voicemail(recording, "manual")
+            self.assertFalse(recording.exists())
+            self.assertEqual(
+                server.read_events(delivery_history)[0]["route"], "signal-manual"
+            )
+
     def test_http_api_requires_the_admin_token(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)

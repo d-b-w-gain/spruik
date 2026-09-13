@@ -9,7 +9,7 @@
 - [x] Docker Compose and Kubernetes configurations from the same image.
 - [x] Regression tests for call routing, the generated voicemail tone, persistence, and Signal delivery.
 - [x] Retry retained Signal messages manually with attempt state and delivery history.
-- [ ] Add bounded automatic retry with backoff.
+- [x] Add bounded automatic retry with backoff.
 - [ ] Publish signed, versioned container releases and a reproducible upgrade procedure.
 
 ## Management experience

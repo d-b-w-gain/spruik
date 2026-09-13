@@ -87,6 +87,11 @@ Set `SPRUIK_HEALTH_ALERTS_ENABLED=true` to send a Signal message when the SIP
 trunk, Signal message service, or Signal audio bridge changes state. The monitor
 records bounded service state only; it does not include caller identities.
 
+Set `SPRUIK_AUTO_RETRY_ENABLED=true` to retry retained voicemail after 1, 5, 15,
+and 60 minutes. The final delay repeats until the configured eight-attempt limit.
+Every attempt remains visible in the manager, and an exhausted recording stays
+available for playback or manual retry.
+
 ## Encrypted backup
 
 `scripts/backup-spruik.sh` exports the PBX manifests, retained voicemail,

@@ -30,6 +30,7 @@ MANAGER_BIND = os.getenv("SPRUIK_MANAGER_BIND", "0.0.0.0")
 MANAGER_PORT = int(os.getenv("SPRUIK_MANAGER_PORT", "8088"))
 SETTINGS_LOCK = threading.Lock()
 EVENTS_LOCK = threading.Lock()
+RETRY_LOCK = threading.Lock()
 SIGNAL_API_URL = os.getenv("SIGNAL_API_URL", "")
 SIGNAL_NUMBER = os.getenv("SIGNAL_NUMBER", "")
 SIGNAL_RECIPIENT = os.getenv("SIGNAL_RECIPIENT", SIGNAL_NUMBER)
@@ -45,6 +46,22 @@ HEALTH_ALERTS_ENABLED = os.getenv("SPRUIK_HEALTH_ALERTS_ENABLED", "false").lower
 }
 HEALTH_INTERVAL_SECONDS = max(
     15, int(os.getenv("SPRUIK_HEALTH_INTERVAL_SECONDS", "60"))
+)
+AUTO_RETRY_ENABLED = os.getenv("SPRUIK_AUTO_RETRY_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+AUTO_RETRY_DELAYS = tuple(
+    max(15, int(value.strip()))
+    for value in os.getenv("SPRUIK_AUTO_RETRY_DELAYS", "60,300,900,3600").split(",")
+    if value.strip()
+)
+AUTO_RETRY_MAX_ATTEMPTS = min(
+    20, max(1, int(os.getenv("SPRUIK_AUTO_RETRY_MAX_ATTEMPTS", "8")))
+)
+AUTO_RETRY_SCAN_SECONDS = max(
+    15, int(os.getenv("SPRUIK_AUTO_RETRY_SCAN_SECONDS", "30"))
 )
 
 PROMPTS = {
@@ -206,6 +223,7 @@ def asterisk_status():
             "signalMessaging": signal_messaging,
             "primaryRoute": "signal",
             "healthAlerts": HEALTH_ALERTS_ENABLED,
+            "automaticRetry": AUTO_RETRY_ENABLED,
         }
 
     contact_lines = contacts.stdout.splitlines()
@@ -229,6 +247,7 @@ def asterisk_status():
         "signalMessaging": signal_messaging,
         "primaryRoute": "signal",
         "healthAlerts": HEALTH_ALERTS_ENABLED,
+        "automaticRetry": AUTO_RETRY_ENABLED,
     }
 
 
@@ -295,13 +314,13 @@ def recording_delivery_state(recording):
     }
 
 
-def save_delivery_state(recording, attempts, status):
+def save_delivery_state(recording, attempts, status, last_attempt=None):
     metadata = Path(str(recording) + ".delivery.json")
     metadata.write_text(
         json.dumps(
             {
                 "attempts": attempts,
-                "lastAttempt": int(time.time()),
+                "lastAttempt": int(time.time() if last_attempt is None else last_attempt),
                 "lastStatus": status,
             },
             separators=(",", ":"),
@@ -342,18 +361,71 @@ def send_signal(message, recording=None):
             raise RuntimeError(f"Signal returned HTTP {response.status}")
 
 
-def retry_voicemail(recording):
-    state = recording_delivery_state(recording)
-    attempts = state["attempts"] + 1
-    try:
-        send_signal("Retried Spruik voicemail.", recording)
-    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
-        save_delivery_state(recording, attempts, "failed")
-        append_event(DELIVERY_HISTORY_FILE, "retained", "signal")
-        raise
-    Path(str(recording) + ".delivery.json").unlink(missing_ok=True)
-    recording.unlink()
-    append_event(DELIVERY_HISTORY_FILE, "delivered", "signal")
+def retry_voicemail(recording, source="manual"):
+    with RETRY_LOCK:
+        if not recording.is_file():
+            raise FileNotFoundError("Voicemail no longer exists")
+        state = recording_delivery_state(recording)
+        attempts = state["attempts"] + 1
+        try:
+            send_signal("Retried Spruik voicemail.", recording)
+        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+            save_delivery_state(recording, attempts, "failed")
+            append_event(DELIVERY_HISTORY_FILE, "retained", f"signal-{source}")
+            raise
+        Path(str(recording) + ".delivery.json").unlink(missing_ok=True)
+        recording.unlink()
+        append_event(DELIVERY_HISTORY_FILE, "delivered", f"signal-{source}")
+
+
+def automatic_retry_due(recording, state, now=None):
+    now = time.time() if now is None else now
+    attempts = state["attempts"]
+    if attempts >= AUTO_RETRY_MAX_ATTEMPTS:
+        return False
+    if not AUTO_RETRY_DELAYS:
+        return False
+    delay_index = max(0, attempts - 1)
+    delay = AUTO_RETRY_DELAYS[min(delay_index, len(AUTO_RETRY_DELAYS) - 1)]
+    reference = state.get("lastAttempt") or recording.stat().st_mtime
+    return now >= float(reference) + delay
+
+
+def voicemail_retry_monitor():
+    while True:
+        try:
+            VOICEMAIL_DIR.mkdir(parents=True, exist_ok=True)
+            for recording in sorted(VOICEMAIL_DIR.glob("*.wav")):
+                if not recording.is_file():
+                    continue
+                state = recording_delivery_state(recording)
+                if state["attempts"] >= AUTO_RETRY_MAX_ATTEMPTS:
+                    if state["lastStatus"] != "exhausted":
+                        save_delivery_state(
+                            recording,
+                            state["attempts"],
+                            "exhausted",
+                            state.get("lastAttempt"),
+                        )
+                        append_event(
+                            DELIVERY_HISTORY_FILE, "exhausted", "signal-auto"
+                        )
+                    continue
+                if not automatic_retry_due(recording, state):
+                    continue
+                try:
+                    retry_voicemail(recording, "auto")
+                except (
+                    FileNotFoundError,
+                    urllib.error.URLError,
+                    TimeoutError,
+                    OSError,
+                    RuntimeError,
+                ):
+                    pass
+        except OSError:
+            pass
+        time.sleep(AUTO_RETRY_SCAN_SECONDS)
 
 
 def health_monitor():
@@ -425,6 +497,7 @@ INDEX_HTML = r"""<!doctype html>
     <section><h2>Status</h2><div id="status">Loading…</div><div class="actions"><button class="secondary" onclick="refresh()">Refresh</button><button class="secondary" onclick="testCall(600)">Test welcome</button><button class="secondary" onclick="testCall(601)">Test hold</button><button class="secondary" onclick="testCall(602)">Test voicemail</button></div></section>
     <section><h2>Messages</h2><div id="voicemails">Loading…</div></section>
     <section><h2>Recent activity</h2><div id="calls">Loading…</div></section>
+    <section><h2>Signal delivery history</h2><div id="deliveries">Loading…</div></section>
     <section><h2>Prompts</h2><div class="grid" id="prompts"></div></section>
     <audio id="player" controls hidden></audio>
   </main>
@@ -439,8 +512,8 @@ async function api(path, options={}) {
 }
 function tell(message, bad=false) { const n=document.getElementById('notice'); n.textContent=message; n.style.color=bad?'#ff8e96':'#62d5a9'; }
 async function connect(){ token=document.getElementById('token').value; try { await api('/api/status'); document.getElementById('login').hidden=true; document.getElementById('app').hidden=false; await refresh(); } catch(e){ tell(e.message,true); } }
-async function refresh(){ try { const [status,prompts,messages,calls]=await Promise.all([(await api('/api/status')).json(),(await api('/api/prompts')).json(),(await api('/api/voicemails')).json(),(await api('/api/calls')).json()]); renderStatus(status); renderPrompts(prompts); renderMessages(messages); renderCalls(calls); } catch(e){ tell(e.message,true); } }
-function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.signalBridge==='online'?'ok':''}">Signal voice ${s.signalBridge}</span><span class="pill ${s.signalMessaging==='online'?'ok':''}">Signal messages ${s.signalMessaging}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC backup ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile backup ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span><span class="pill ${s.healthAlerts?'ok':''}">Alerts ${s.healthAlerts?'on':'off'}</span>`; }
+async function refresh(){ try { const [status,prompts,messages,calls,deliveries]=await Promise.all([(await api('/api/status')).json(),(await api('/api/prompts')).json(),(await api('/api/voicemails')).json(),(await api('/api/calls')).json(),(await api('/api/deliveries')).json()]); renderStatus(status); renderPrompts(prompts); renderMessages(messages); renderCalls(calls); renderDeliveries(deliveries); } catch(e){ tell(e.message,true); } }
+function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.signalBridge==='online'?'ok':''}">Signal voice ${s.signalBridge}</span><span class="pill ${s.signalMessaging==='online'?'ok':''}">Signal messages ${s.signalMessaging}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC backup ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile backup ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span><span class="pill ${s.healthAlerts?'ok':''}">Alerts ${s.healthAlerts?'on':'off'}</span><span class="pill ${s.automaticRetry?'ok':''}">Auto retry ${s.automaticRetry?'on':'off'}</span>`; }
 function renderPrompts(settings){ const root=document.getElementById('prompts'); root.innerHTML=''; Object.entries(settings).forEach(([name,value])=>{ const card=document.createElement('div'); card.innerHTML=`<h3>${labels[name]}</h3><label>Voice</label><input id="${name}-voice" value="${escapeHtml(value.voice)}"><label>Script</label><textarea id="${name}-text">${escapeHtml(value.text)}</textarea><div class="actions"><button class="secondary" onclick="preview('${name}')">Preview</button><button onclick="savePrompt('${name}')">Save live</button></div>`; root.appendChild(card); }); }
 function escapeHtml(value){ return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function promptBody(name){ return JSON.stringify({voice:document.getElementById(name+'-voice').value,text:document.getElementById(name+'-text').value}); }
@@ -449,6 +522,7 @@ async function savePrompt(name){ try { tell('Generating and installing prompt…
 async function testCall(extension){ try { await api('/api/test-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:'101',extension:String(extension)})}); tell('Test call sent to the PC.'); } catch(e){ tell(e.message,true); } }
 function renderMessages(data){ const root=document.getElementById('voicemails'); if(!data.length){ root.innerHTML='<span class="muted">No retained messages.</span>'; return; } root.innerHTML='<table><thead><tr><th>Recorded</th><th>Delivery</th><th></th></tr></thead><tbody>'+data.map(v=>`<tr><td><a href="#" onclick="playMessage('${v.name}');return false">${new Date(v.modified*1000).toLocaleString()}</a><div class="muted">${Math.ceil(v.size/1024)} KB</div></td><td>${escapeHtml(v.delivery.lastStatus)}${v.delivery.attempts?' · '+v.delivery.attempts+' attempt'+(v.delivery.attempts===1?'':'s'):''}</td><td><button class="compact" onclick="retryMessage('${v.name}')">Retry Signal</button><button class="danger compact" onclick="deleteMessage('${v.name}')">Delete</button></td></tr>`).join('')+'</tbody></table>'; }
 function renderCalls(data){ const root=document.getElementById('calls'); if(!data.length){ root.innerHTML='<span class="muted">No call outcomes recorded yet.</span>'; return; } root.innerHTML='<table><thead><tr><th>When</th><th>Outcome</th><th>Route</th></tr></thead><tbody>'+data.map(v=>`<tr><td>${new Date(v.timestamp*1000).toLocaleString()}</td><td>${escapeHtml(v.outcome)}</td><td>${escapeHtml(v.route)}</td></tr>`).join('')+'</tbody></table>'; }
+function renderDeliveries(data){ const root=document.getElementById('deliveries'); if(!data.length){ root.innerHTML='<span class="muted">No delivery retries recorded yet.</span>'; return; } root.innerHTML='<table><thead><tr><th>When</th><th>Result</th><th>Source</th></tr></thead><tbody>'+data.map(v=>`<tr><td>${new Date(v.timestamp*1000).toLocaleString()}</td><td>${escapeHtml(v.outcome)}</td><td>${escapeHtml(v.route)}</td></tr>`).join('')+'</tbody></table>'; }
 async function playMessage(name){ try { const response=await api('/api/voicemails/'+encodeURIComponent(name)); const player=document.getElementById('player'); player.src=URL.createObjectURL(await response.blob()); player.hidden=false; await player.play(); } catch(e){ tell(e.message,true); } }
 async function retryMessage(name){ try { tell('Retrying Signal delivery…'); await api('/api/voicemails/'+encodeURIComponent(name)+'/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); tell('Voicemail delivered through Signal.'); await refresh(); } catch(e){ tell(e.message,true); await refresh(); } }
 async function deleteMessage(name){ if(!confirm('Delete this retained voicemail?')) return; try { await api('/api/voicemails/'+encodeURIComponent(name),{method:'DELETE'}); tell('Voicemail deleted.'); await refresh(); } catch(e){ tell(e.message,true); } }
@@ -545,6 +619,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/calls":
             self.send_json(200, read_events(CALL_HISTORY_FILE))
             return
+        if path == "/api/deliveries":
+            self.send_json(200, read_events(DELIVERY_HISTORY_FILE))
+            return
         if path.startswith("/api/voicemails/"):
             name = urllib.parse.unquote(path.rsplit("/", 1)[-1])
             recording = safe_recording(name)
@@ -566,7 +643,7 @@ class Handler(BaseHTTPRequestHandler):
                 if recording is None or not recording.is_file():
                     self.send_json(404, {"error": "Voicemail not found"})
                     return
-                retry_voicemail(recording)
+                retry_voicemail(recording, "manual")
                 self.send_json(200, {"delivered": True})
                 return
             payload = self.read_json()
@@ -664,5 +741,7 @@ if __name__ == "__main__":
     VOICEMAIL_DIR.mkdir(parents=True, exist_ok=True)
     if HEALTH_ALERTS_ENABLED:
         threading.Thread(target=health_monitor, daemon=True).start()
+    if AUTO_RETRY_ENABLED:
+        threading.Thread(target=voicemail_retry_monitor, daemon=True).start()
     print(f"Spruik manager listening on {MANAGER_BIND}:{MANAGER_PORT}", flush=True)
     ThreadingHTTPServer((MANAGER_BIND, MANAGER_PORT), Handler).serve_forever()
