@@ -806,7 +806,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 accepted = enqueue_signal_command(self.read_json())
-                self.send_json(202, {"accepted": accepted})
+                self.send_json(200, {"accepted": accepted})
             except (ValueError, json.JSONDecodeError):
                 self.send_json(400, {"error": "Invalid Signal event"})
             return

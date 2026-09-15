@@ -255,7 +255,7 @@ class ManagerTests(unittest.TestCase):
                 method="POST",
             )
             with urllib.request.urlopen(accepted, timeout=2) as response:
-                self.assertEqual(response.status, 202)
+                self.assertEqual(response.status, 200)
 
 
 if __name__ == "__main__":
