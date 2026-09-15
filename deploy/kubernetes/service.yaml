@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: spruik-manager
+  namespace: telephony
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: spruik
+  ports:
+    - name: manager
+      port: 8088
+      targetPort: manager
+      protocol: TCP

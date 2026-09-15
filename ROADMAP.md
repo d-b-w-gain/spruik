@@ -22,6 +22,7 @@
 - [x] Retry retained voicemails from the UI with delivery history.
 - [x] Protect management access and keep credentials out of browser storage and logs.
 - [x] Trigger internal welcome, hold, and voicemail test calls.
+- [x] Provide an allowlisted, read-only Signal command console.
 
 ## Mobile endpoint
 

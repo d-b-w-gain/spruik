@@ -92,6 +92,27 @@ and 60 minutes. The final delay repeats until the configured eight-attempt limit
 Every attempt remains visible in the manager, and an exhausted recording stays
 available for playback or manual retry.
 
+## Signal commands
+
+Spruik can expose a private, read-only command console through its Signal
+identity. Set `SPRUIK_SIGNAL_COMMANDS_ENABLED=true`, provide the one allowed
+sender in `SPRUIK_SIGNAL_COMMAND_ALLOWED_SENDER`, and generate a separate random
+`SPRUIK_SIGNAL_COMMAND_WEBHOOK_TOKEN`. Configure signal-cli-rest-api's
+`RECEIVE_WEBHOOK_URL` as:
+
+```text
+http://spruik-manager.telephony.svc.cluster.local:8088/api/signal/events/<token>
+```
+
+The webhook returns before sending the reply, avoiding a JSON-RPC webhook/send
+deadlock. The token is suppressed from Spruik's access log. Only direct command
+messages from the allowed sender are accepted; ordinary chat, group messages,
+typing events, receipts, and sent-message sync events are ignored.
+
+Available commands are `/help`, `/status`, `/calls`, `/voicemail`, and `/ping`.
+They expose bounded operational summaries without caller identities or message
+contents.
+
 ## Encrypted backup
 
 `scripts/backup-spruik.sh` exports the PBX manifests, retained voicemail,

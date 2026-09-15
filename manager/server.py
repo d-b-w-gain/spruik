@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import hmac
 import base64
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import subprocess
 import threading
@@ -31,6 +33,8 @@ MANAGER_PORT = int(os.getenv("SPRUIK_MANAGER_PORT", "8088"))
 SETTINGS_LOCK = threading.Lock()
 EVENTS_LOCK = threading.Lock()
 RETRY_LOCK = threading.Lock()
+COMMAND_STATE_LOCK = threading.Lock()
+COMMAND_QUEUE = queue.Queue(maxsize=50)
 SIGNAL_API_URL = os.getenv("SIGNAL_API_URL", "")
 SIGNAL_NUMBER = os.getenv("SIGNAL_NUMBER", "")
 SIGNAL_RECIPIENT = os.getenv("SIGNAL_RECIPIENT", SIGNAL_NUMBER)
@@ -63,6 +67,16 @@ AUTO_RETRY_MAX_ATTEMPTS = min(
 AUTO_RETRY_SCAN_SECONDS = max(
     15, int(os.getenv("SPRUIK_AUTO_RETRY_SCAN_SECONDS", "30"))
 )
+SIGNAL_COMMANDS_ENABLED = os.getenv("SPRUIK_SIGNAL_COMMANDS_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+SIGNAL_COMMAND_ALLOWED_SENDER = os.getenv(
+    "SPRUIK_SIGNAL_COMMAND_ALLOWED_SENDER", SIGNAL_RECIPIENT
+)
+SIGNAL_COMMAND_WEBHOOK_TOKEN = os.getenv("SPRUIK_SIGNAL_COMMAND_WEBHOOK_TOKEN", "")
+SIGNAL_COMMAND_STATE_FILE = DATA_DIR / "signal-command-state.json"
 
 PROMPTS = {
     "standard": {
@@ -224,6 +238,7 @@ def asterisk_status():
             "primaryRoute": "signal",
             "healthAlerts": HEALTH_ALERTS_ENABLED,
             "automaticRetry": AUTO_RETRY_ENABLED,
+            "signalCommands": SIGNAL_COMMANDS_ENABLED,
         }
 
     contact_lines = contacts.stdout.splitlines()
@@ -248,6 +263,7 @@ def asterisk_status():
         "primaryRoute": "signal",
         "healthAlerts": HEALTH_ALERTS_ENABLED,
         "automaticRetry": AUTO_RETRY_ENABLED,
+        "signalCommands": SIGNAL_COMMANDS_ENABLED,
     }
 
 
@@ -330,14 +346,15 @@ def save_delivery_state(recording, attempts, status, last_attempt=None):
     )
 
 
-def signal_payload(message, recording=None):
-    if not SIGNAL_API_URL or not SIGNAL_NUMBER or not SIGNAL_RECIPIENT:
+def signal_payload(message, recording=None, recipient=None):
+    recipient = recipient or SIGNAL_RECIPIENT
+    if not SIGNAL_API_URL or not SIGNAL_NUMBER or not recipient:
         raise RuntimeError("Signal delivery is not configured")
     payload = {
         "number": SIGNAL_NUMBER,
-        "recipients": [SIGNAL_RECIPIENT],
+        "recipients": [recipient],
         "message": message,
-        "notify_self": SIGNAL_NUMBER == SIGNAL_RECIPIENT,
+        "notify_self": SIGNAL_NUMBER == recipient,
     }
     if recording is not None:
         encoded = base64.b64encode(recording.read_bytes()).decode("ascii")
@@ -347,18 +364,159 @@ def signal_payload(message, recording=None):
     return payload
 
 
-def send_signal(message, recording=None):
+def send_signal(message, recording=None, recipient=None):
     request = urllib.request.Request(
         SIGNAL_API_URL,
-        data=json.dumps(signal_payload(message, recording), separators=(",", ":")).encode(
-            "utf-8"
-        ),
+        data=json.dumps(
+            signal_payload(message, recording, recipient), separators=(",", ":")
+        ).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=90) as response:
         if response.status >= 300:
             raise RuntimeError(f"Signal returned HTTP {response.status}")
+
+
+def command_event(payload):
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("method") not in (None, "receive"):
+        return None
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    envelope = params.get("envelope") or payload.get("envelope")
+    if not isinstance(envelope, dict):
+        return None
+    account = params.get("account") or payload.get("account")
+    source = envelope.get("sourceNumber") or envelope.get("source")
+    data_message = envelope.get("dataMessage")
+    if (
+        account != SIGNAL_NUMBER
+        or source != SIGNAL_COMMAND_ALLOWED_SENDER
+        or not isinstance(data_message, dict)
+        or data_message.get("groupInfo")
+    ):
+        return None
+    message = data_message.get("message")
+    if not isinstance(message, str) or not message.strip().startswith("/"):
+        return None
+    timestamp = data_message.get("timestamp") or envelope.get("timestamp")
+    fingerprint = hashlib.sha256(
+        f"{account}|{source}|{timestamp}|{message}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "source": source,
+        "message": message.strip()[:200],
+        "fingerprint": fingerprint,
+    }
+
+
+def remember_command(fingerprint):
+    with COMMAND_STATE_LOCK:
+        try:
+            state = json.loads(SIGNAL_COMMAND_STATE_FILE.read_text(encoding="utf-8"))
+            seen = state.get("seen", []) if isinstance(state, dict) else []
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            seen = []
+        if fingerprint in seen:
+            return False
+        SIGNAL_COMMAND_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SIGNAL_COMMAND_STATE_FILE.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"seen": (seen + [fingerprint])[-100:]}, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, SIGNAL_COMMAND_STATE_FILE)
+        return True
+
+
+def enqueue_signal_command(payload):
+    event = command_event(payload)
+    if event is None or not remember_command(event["fingerprint"]):
+        return False
+    event["notBefore"] = time.monotonic() + 0.5
+    try:
+        COMMAND_QUEUE.put_nowait(event)
+    except queue.Full:
+        append_event(DELIVERY_HISTORY_FILE, "command-dropped", "signal-command")
+        return False
+    return True
+
+
+def status_symbol(value):
+    return "online" if value in (True, "online") else "offline"
+
+
+def command_response(message):
+    parts = message.split()
+    command = parts[0].lower()
+    if command in ("/help", "/?"):
+        return (
+            "Spruik commands\n"
+            "/status - service health\n"
+            "/calls - five recent anonymous outcomes\n"
+            "/voicemail - retained-message summary\n"
+            "/ping - confirm the command bot is awake"
+        )
+    if command in ("/status", "/health"):
+        status = asterisk_status()
+        return "\n".join(
+            [
+                "Spruik status",
+                f"Asterisk: {status['asterisk']}",
+                f"Carrier trunk: {status_symbol(status['trunkRegistered'])}",
+                f"Signal voice: {status['signalBridge']}",
+                f"Signal messages: {status['signalMessaging']}",
+                f"Active channels: {status['activeChannels']}",
+                f"Retained voicemail: {len(list(VOICEMAIL_DIR.glob('*.wav')))}",
+                f"Automatic retry: {'on' if AUTO_RETRY_ENABLED else 'off'}",
+            ]
+        )
+    if command == "/calls":
+        events = read_events(CALL_HISTORY_FILE, 5)
+        if not events:
+            return "No call outcomes have been recorded yet."
+        lines = ["Recent anonymous call outcomes"]
+        for event in events:
+            when = time.strftime("%d %b %H:%M", time.localtime(event["timestamp"]))
+            lines.append(f"{when} - {event['outcome']} via {event['route']}")
+        return "\n".join(lines)
+    if command in ("/voicemail", "/messages"):
+        recordings = [item for item in VOICEMAIL_DIR.glob("*.wav") if item.is_file()]
+        if not recordings:
+            return "No retained voicemail."
+        failed = 0
+        exhausted = 0
+        for recording in recordings:
+            state = recording_delivery_state(recording)
+            failed += state["attempts"]
+            exhausted += int(state["lastStatus"] == "exhausted")
+        return (
+            f"Retained voicemail: {len(recordings)}\n"
+            f"Failed delivery attempts: {failed}\n"
+            f"Exhausted: {exhausted}\n"
+            "Open the Spruik UI to play or retry recordings."
+        )
+    if command == "/ping":
+        return "Spruik is awake."
+    return "Unknown Spruik command. Send /help for the available commands."
+
+
+def signal_command_worker():
+    while True:
+        event = COMMAND_QUEUE.get()
+        try:
+            delay = event.get("notBefore", 0) - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            response = command_response(event["message"])
+            send_signal(response, recipient=event["source"])
+            append_event(DELIVERY_HISTORY_FILE, "command-replied", "signal-command")
+        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+            append_event(DELIVERY_HISTORY_FILE, "command-failed", "signal-command")
+        finally:
+            COMMAND_QUEUE.task_done()
 
 
 def retry_voicemail(recording, source="manual"):
@@ -513,7 +671,7 @@ async function api(path, options={}) {
 function tell(message, bad=false) { const n=document.getElementById('notice'); n.textContent=message; n.style.color=bad?'#ff8e96':'#62d5a9'; }
 async function connect(){ token=document.getElementById('token').value; try { await api('/api/status'); document.getElementById('login').hidden=true; document.getElementById('app').hidden=false; await refresh(); } catch(e){ tell(e.message,true); } }
 async function refresh(){ try { const [status,prompts,messages,calls,deliveries]=await Promise.all([(await api('/api/status')).json(),(await api('/api/prompts')).json(),(await api('/api/voicemails')).json(),(await api('/api/calls')).json(),(await api('/api/deliveries')).json()]); renderStatus(status); renderPrompts(prompts); renderMessages(messages); renderCalls(calls); renderDeliveries(deliveries); } catch(e){ tell(e.message,true); } }
-function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.signalBridge==='online'?'ok':''}">Signal voice ${s.signalBridge}</span><span class="pill ${s.signalMessaging==='online'?'ok':''}">Signal messages ${s.signalMessaging}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC backup ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile backup ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span><span class="pill ${s.healthAlerts?'ok':''}">Alerts ${s.healthAlerts?'on':'off'}</span><span class="pill ${s.automaticRetry?'ok':''}">Auto retry ${s.automaticRetry?'on':'off'}</span>`; }
+function renderStatus(s){ document.getElementById('status').innerHTML=`<span class="pill ${s.signalBridge==='online'?'ok':''}">Signal voice ${s.signalBridge}</span><span class="pill ${s.signalMessaging==='online'?'ok':''}">Signal messages ${s.signalMessaging}</span><span class="pill ${s.trunkRegistered?'ok':''}">Trunk ${s.trunkRegistered?'registered':'offline'}</span><span class="pill ${s.endpoints['101']?'ok':''}">PC backup ${s.endpoints['101']?'ready':'offline'}</span><span class="pill ${s.endpoints['102']?'ok':''}">Mobile backup ${s.endpoints['102']?'ready':'offline'}</span><span class="pill ok">${s.activeChannels} active channels</span><span class="pill ${s.healthAlerts?'ok':''}">Alerts ${s.healthAlerts?'on':'off'}</span><span class="pill ${s.automaticRetry?'ok':''}">Auto retry ${s.automaticRetry?'on':'off'}</span><span class="pill ${s.signalCommands?'ok':''}">Signal commands ${s.signalCommands?'on':'off'}</span>`; }
 function renderPrompts(settings){ const root=document.getElementById('prompts'); root.innerHTML=''; Object.entries(settings).forEach(([name,value])=>{ const card=document.createElement('div'); card.innerHTML=`<h3>${labels[name]}</h3><label>Voice</label><input id="${name}-voice" value="${escapeHtml(value.voice)}"><label>Script</label><textarea id="${name}-text">${escapeHtml(value.text)}</textarea><div class="actions"><button class="secondary" onclick="preview('${name}')">Preview</button><button onclick="savePrompt('${name}')">Save live</button></div>`; root.appendChild(card); }); }
 function escapeHtml(value){ return value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function promptBody(name){ return JSON.stringify({voice:document.getElementById(name+'-voice').value,text:document.getElementById(name+'-text').value}); }
@@ -534,6 +692,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "SpruikManager/0.1"
 
     def log_message(self, format_string, *args):
+        if self.path.startswith("/api/signal/events/"):
+            return
         print(
             "%s - %s" % (self.address_string(), format_string % args), flush=True
         )
@@ -634,6 +794,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        webhook_prefix = "/api/signal/events/"
+        if path.startswith(webhook_prefix):
+            supplied = urllib.parse.unquote(path[len(webhook_prefix) :])
+            if (
+                not SIGNAL_COMMANDS_ENABLED
+                or not SIGNAL_COMMAND_WEBHOOK_TOKEN
+                or not hmac.compare_digest(supplied, SIGNAL_COMMAND_WEBHOOK_TOKEN)
+            ):
+                self.send_json(404, {"error": "Not found"})
+                return
+            try:
+                accepted = enqueue_signal_command(self.read_json())
+                self.send_json(202, {"accepted": accepted})
+            except (ValueError, json.JSONDecodeError):
+                self.send_json(400, {"error": "Invalid Signal event"})
+            return
         if not self.authorized():
             return
         try:
@@ -743,5 +919,9 @@ if __name__ == "__main__":
         threading.Thread(target=health_monitor, daemon=True).start()
     if AUTO_RETRY_ENABLED:
         threading.Thread(target=voicemail_retry_monitor, daemon=True).start()
+    if SIGNAL_COMMANDS_ENABLED:
+        if not SIGNAL_COMMAND_WEBHOOK_TOKEN or not SIGNAL_COMMAND_ALLOWED_SENDER:
+            raise SystemExit("Signal commands require a webhook token and allowed sender")
+        threading.Thread(target=signal_command_worker, daemon=True).start()
     print(f"Spruik manager listening on {MANAGER_BIND}:{MANAGER_PORT}", flush=True)
     ThreadingHTTPServer((MANAGER_BIND, MANAGER_PORT), Handler).serve_forever()
