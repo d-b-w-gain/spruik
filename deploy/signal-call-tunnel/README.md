@@ -51,3 +51,15 @@ the outgoing call reaches `CONNECTED` when answered by a linked receiving
 device. Asterisk keeps the public caller ringing while Signal rings, attaches
 AudioSocket after the Signal answer, and falls back to voicemail after a decline
 or timeout.
+
+## Private inbound proof
+
+Set `SIGNAL_INBOUND_CALLS_ENABLED=true` to let the bridge listen for direct
+Signal calls. The configured `SIGNAL_CALL_RECIPIENT` is the default allowlisted
+caller; `SIGNAL_INBOUND_ALLOWED_CALLERS` can override it with a comma-separated
+list of Signal numbers or UUIDs. Calls outside the allowlist are rejected.
+
+For this initial proof, Spruik generates `SIGNAL_INBOUND_GREETING` with Kokoro,
+answers only after the audio is ready, plays it through the call tunnel, and
+hangs up. Configure `KOKORO_URL` and optionally `SIGNAL_INBOUND_VOICE`. This is
+deliberately a one-way status greeting; duplex commands are the next layer.

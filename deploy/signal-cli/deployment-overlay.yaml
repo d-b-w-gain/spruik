@@ -39,6 +39,14 @@ spec:
                 secretKeyRef:
                   name: signal-call-bridge
                   key: recipient
+            - name: SIGNAL_INBOUND_CALLS_ENABLED
+              value: "false"
+            - name: SIGNAL_INBOUND_GREETING
+              value: Spruik is online. Signal voice is connected. The inbound call path is working.
+            - name: SIGNAL_INBOUND_VOICE
+              value: af_heart
+            - name: KOKORO_URL
+              value: http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech
           ports:
             - name: bridge-control
               containerPort: 9091

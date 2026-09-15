@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge one Asterisk AudioSocket call to signal-cli's call tunnel audio."""
+"""Bridge Asterisk and private inbound calls to signal-cli's call audio."""
 
 import json
 import os
@@ -21,6 +21,18 @@ AUDIO_ADDRESS = ("0.0.0.0", int(os.environ.get("SIGNAL_BRIDGE_AUDIO_PORT", "9092
 RING_SECONDS = int(os.environ.get("SIGNAL_RING_SECONDS", "40"))
 CLAIM_SECONDS = int(os.environ.get("SIGNAL_AUDIO_CLAIM_SECONDS", "15"))
 PULSE_SERVER = os.environ.get("PULSE_SERVER", "unix:/run/spruik-pulse/native")
+KOKORO_URL = os.environ.get(
+    "KOKORO_URL", "http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech"
+)
+INBOUND_CALLS_ENABLED = os.environ.get(
+    "SIGNAL_INBOUND_CALLS_ENABLED", "false"
+).lower() in ("1", "true", "yes", "on")
+INBOUND_GREETING = os.environ.get(
+    "SIGNAL_INBOUND_GREETING",
+    "Spruik is online. Signal voice is connected. The inbound call path is working.",
+)
+INBOUND_VOICE = os.environ.get("SIGNAL_INBOUND_VOICE", "af_heart")
+INBOUND_CONNECT_SECONDS = int(os.environ.get("SIGNAL_INBOUND_CONNECT_SECONDS", "20"))
 
 
 def get_account():
@@ -56,6 +68,60 @@ def extract_call(message):
     if isinstance(result, dict):
         call = {**result, **call}
     return call
+
+
+def synthesize(text, voice):
+    body = json.dumps(
+        {
+            "model": "kokoro",
+            "input": text,
+            "voice": voice,
+            "response_format": "pcm",
+            "speed": 1.0,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        KOKORO_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        pcm = response.read()
+    if not pcm:
+        raise RuntimeError("Kokoro returned empty audio")
+    return pcm
+
+
+def play_pcm(call, pcm):
+    input_device = call.input_device_name or f"signal_input_{call.call_id}"
+    playback_device = f"sink_for_{input_device}"
+    pulse_env = {**os.environ, "PULSE_SERVER": PULSE_SERVER}
+    command = [
+        "pacat",
+        "--playback",
+        f"--device={playback_device}",
+        "--raw",
+        "--rate=24000",
+        "--channels=1",
+        "--format=s16le",
+    ]
+    last_error = None
+    for attempt in range(5):
+        try:
+            subprocess.run(
+                command,
+                input=pcm,
+                check=True,
+                timeout=60,
+                env=pulse_env,
+            )
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            last_error = error
+            if attempt < 4:
+                time.sleep(0.4)
+    raise RuntimeError(f"Unable to play inbound greeting: {last_error}")
 
 
 class SignalCall:
@@ -139,6 +205,120 @@ class SignalCall:
                 pass
 
 
+class InboundSignalCall:
+    def __init__(self, call_id, listener, event):
+        self.call_id = call_id
+        self.listener = listener
+        self.input_device_name = event.get("inputDeviceName")
+        self.output_device_name = event.get("outputDeviceName")
+        self.connected = threading.Event()
+        self.ended = threading.Event()
+
+    def update(self, event):
+        self.input_device_name = event.get("inputDeviceName") or self.input_device_name
+        self.output_device_name = event.get("outputDeviceName") or self.output_device_name
+        state = event.get("state")
+        if state == "CONNECTED":
+            self.connected.set()
+        elif state == "ENDED":
+            self.ended.set()
+
+    def accept(self, account):
+        self.listener.send(
+            "acceptCall",
+            {"account": account, "callId": self.call_id},
+            f"accept-inbound-{self.call_id}",
+        )
+
+    def reject(self, account):
+        self.listener.send(
+            "rejectCall",
+            {"account": account, "callId": self.call_id},
+            f"reject-inbound-{self.call_id}",
+        )
+
+    def stop(self, account):
+        if self.ended.is_set():
+            return
+        try:
+            self.listener.send(
+                "hangupCall",
+                {"account": account, "callId": self.call_id},
+                f"hangup-inbound-{self.call_id}",
+            )
+        except (BrokenPipeError, OSError):
+            pass
+        self.ended.set()
+
+
+class InboundSignalListener:
+    def __init__(self, broker):
+        self.broker = broker
+        self.connection = None
+        self.stream = None
+        self._write_lock = threading.Lock()
+
+    def send(self, method, params, request_id):
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": request_id,
+        }
+        with self._write_lock:
+            self.stream.write((json.dumps(payload) + "\n").encode())
+
+    def run(self):
+        while True:
+            try:
+                self._listen()
+            except Exception as error:
+                print(f"Inbound Signal listener reconnecting: {error}", flush=True)
+            finally:
+                self.broker.inbound_listener_lost(self)
+                self._close()
+            time.sleep(2)
+
+    def _listen(self):
+        self.connection = socket.create_connection(JSON_RPC_ADDRESS, timeout=5)
+        self.connection.settimeout(None)
+        self.stream = self.connection.makefile("rwb", buffering=0)
+        self.send(
+            "subscribeCallEvents",
+            {"account": self.broker.account},
+            "subscribe-inbound",
+        )
+        response = json.loads(self.stream.readline())
+        if response.get("error"):
+            raise RuntimeError("inbound call-event subscription failed")
+        print("Inbound Signal call listener online", flush=True)
+        while True:
+            line = self.stream.readline()
+            if not line:
+                raise RuntimeError("signal-cli closed the inbound call connection")
+            message = json.loads(line)
+            if message.get("error"):
+                print("Inbound Signal call command was rejected", flush=True)
+                continue
+            call = extract_call(message)
+            if call.get("callId") is not None:
+                self.broker.handle_inbound_event(call, self)
+
+    def _close(self):
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except OSError:
+                pass
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+        self.stream = None
+        self.connection = None
+
+
 class CallBroker:
     def __init__(self):
         self.account = get_account()
@@ -148,6 +328,14 @@ class CallBroker:
         self._call_slot = threading.Lock()
         self._pending_lock = threading.Lock()
         self._pending = None
+        configured_callers = os.environ.get(
+            "SIGNAL_INBOUND_ALLOWED_CALLERS", self.recipient
+        )
+        self.allowed_inbound_callers = {
+            item.strip() for item in configured_callers.split(",") if item.strip()
+        }
+        self._inbound_lock = threading.Lock()
+        self._inbound = None
 
     def start_call(self):
         if not self._call_slot.acquire(blocking=False):
@@ -198,6 +386,74 @@ class CallBroker:
     def finish_call(self, call):
         call.stop()
         self._call_slot.release()
+
+    def handle_inbound_event(self, event, listener):
+        if event.get("isOutgoing") is True:
+            return
+        call_id = event.get("callId")
+        state = event.get("state")
+        if call_id is None:
+            return
+
+        with self._inbound_lock:
+            active = self._inbound
+            if active is not None and active.call_id == call_id:
+                active.update(event)
+                return
+            if state != "RINGING_INCOMING":
+                return
+
+            caller = event.get("number") or event.get("uuid") or ""
+            call = InboundSignalCall(call_id, listener, event)
+            if caller not in self.allowed_inbound_callers:
+                print("Rejected an inbound Signal call outside the allowlist", flush=True)
+                call.reject(self.account)
+                return
+            if not self._call_slot.acquire(blocking=False):
+                print("Rejected an inbound Signal call while Spruik was busy", flush=True)
+                call.reject(self.account)
+                return
+            self._inbound = call
+
+        threading.Thread(
+            target=self._serve_inbound_call,
+            args=(call,),
+            daemon=True,
+        ).start()
+
+    def _serve_inbound_call(self, call):
+        try:
+            pcm = synthesize(INBOUND_GREETING, INBOUND_VOICE)
+            if call.ended.is_set():
+                return
+            call.accept(self.account)
+            if not call.connected.wait(INBOUND_CONNECT_SECONDS):
+                raise TimeoutError("Inbound Signal call did not connect")
+            if call.ended.is_set():
+                return
+            print("Inbound Signal call connected; playing Kokoro status", flush=True)
+            play_pcm(call, pcm)
+        except Exception as error:
+            print(f"Inbound Signal call failed: {error}", flush=True)
+        finally:
+            call.stop(self.account)
+            self._finish_inbound(call)
+
+    def _finish_inbound(self, call):
+        with self._inbound_lock:
+            if self._inbound is not call:
+                return
+            self._inbound = None
+            self._call_slot.release()
+
+    def inbound_listener_lost(self, listener):
+        with self._inbound_lock:
+            call = self._inbound
+            if call is None or call.listener is not listener:
+                return
+            call.ended.set()
+            self._inbound = None
+            self._call_slot.release()
 
 
 def read_exact(connection, size):
@@ -325,6 +581,11 @@ def main():
     broker = CallBroker()
     ControlHandler.broker = broker
     threading.Thread(target=serve_audio, args=(broker,), daemon=True).start()
+    if INBOUND_CALLS_ENABLED:
+        threading.Thread(
+            target=InboundSignalListener(broker).run,
+            daemon=True,
+        ).start()
     server = ThreadingHTTPServer(CONTROL_ADDRESS, ControlHandler)
     print(f"Signal call control listening on port {CONTROL_ADDRESS[1]}", flush=True)
     server.serve_forever()
