@@ -31,13 +31,14 @@ USER root
 COPY --from=signal-cli-release /out/signal-cli /opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli-native
 COPY --from=signal-call-tunnel-build /src/signal-call-tunnel/target/release/signal-call-tunnel /usr/local/bin/signal-call-tunnel
 COPY scripts/signal-audiosocket-bridge.py /usr/local/bin/signal-audiosocket-bridge.py
+COPY scripts/start-signal-audiosocket-bridge.sh /usr/local/bin/start-signal-audiosocket-bridge
 COPY deploy/signal-call-tunnel/pulse-client.conf /etc/pulse/client.conf.d/99-spruik.conf
 COPY deploy/signal-cli/spruik-pulse.conf /etc/supervisor/conf.d/spruik-pulse.conf
 COPY deploy/signal-cli/signal-audiosocket-bridge.conf /etc/supervisor/conf.d/signal-audiosocket-bridge.conf
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && chmod 0755 /usr/local/bin/signal-call-tunnel /usr/local/bin/signal-audiosocket-bridge.py \
+    && chmod 0755 /usr/local/bin/signal-call-tunnel /usr/local/bin/signal-audiosocket-bridge.py /usr/local/bin/start-signal-audiosocket-bridge \
     && ln -sfn /opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli-native /usr/bin/signal-cli-native
 
 LABEL org.opencontainers.image.source="https://github.com/d-b-w-gain/spruik"
