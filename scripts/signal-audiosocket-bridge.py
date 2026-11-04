@@ -99,8 +99,14 @@ def synthesize(text, voice):
     return pcm
 
 
+def device_call_id(call_id):
+    """signal-cli reports call IDs as signed 64-bit numbers; the call tunnel names its
+    PulseAudio devices with the same ID read as unsigned (e.g. -2 -> 18446744073709551614)."""
+    return int(call_id) % (1 << 64)
+
+
 def play_pcm(call, pcm):
-    input_device = call.input_device_name or f"signal_input_{call.call_id}"
+    input_device = call.input_device_name or f"signal_input_{device_call_id(call.call_id)}"
     playback_device = f"sink_for_{input_device}"
     pulse_env = {**os.environ, "PULSE_SERVER": PULSE_SERVER}
     command = [
@@ -137,8 +143,10 @@ class SignalCall:
         self.connection = None
         self.stream = None
         self.call_id = None
-        # Outgoing calls use signal_input_<call id>; play_pcm falls back to that.
+        # Filled from call events when signal-cli reports them; otherwise the
+        # tunnel's signal_input_/signal_output_<unsigned call id> names are used.
         self.input_device_name = None
+        self.output_device_name = None
         self._write_lock = threading.Lock()
 
     def _send(self, method, params, request_id):
@@ -179,6 +187,8 @@ class SignalCall:
             call = extract_call(message)
             if call.get("callId") is not None:
                 self.call_id = call["callId"]
+            self.input_device_name = call.get("inputDeviceName") or self.input_device_name
+            self.output_device_name = call.get("outputDeviceName") or self.output_device_name
             state = call.get("state")
             if state:
                 print(f"Signal call state: {state}", flush=True)
@@ -513,8 +523,14 @@ def send_audio(connection, audio):
 
 def bridge_audio(connection, call):
     pulse_env = {**os.environ, "PULSE_SERVER": PULSE_SERVER}
-    playback_device = f"sink_for_signal_input_{call.call_id}"
-    record_device = f"signal_output_{call.call_id}.monitor"
+    input_device = getattr(call, "input_device_name", None) or (
+        f"signal_input_{device_call_id(call.call_id)}"
+    )
+    output_device = getattr(call, "output_device_name", None) or (
+        f"signal_output_{device_call_id(call.call_id)}"
+    )
+    playback_device = f"sink_for_{input_device}"
+    record_device = f"{output_device}.monitor"
     common = ["--raw", "--rate=8000", "--channels=1", "--format=s16le"]
     playback = subprocess.Popen(
         ["pacat", "--playback", f"--device={playback_device}", *common],

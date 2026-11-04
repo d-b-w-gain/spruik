@@ -173,6 +173,25 @@ class SignalAudioSocketBridgeTests(unittest.TestCase):
             BRIDGE.play_pcm(call, b"\x00\x00")
         self.assertIn("--device=sink_for_signal_input_7", run.call_args.args[0])
 
+    def test_negative_call_ids_map_to_the_tunnels_unsigned_device_names(self):
+        # Seen live: signal-cli reported -7635838990837394565; the tunnel's sink was
+        # sink_for_signal_input_10810905082872157051.
+        call = BRIDGE.SignalCall("spruik", "recipient")
+        call.call_id = -7635838990837394565
+        with patch.object(BRIDGE.subprocess, "run") as run:
+            BRIDGE.play_pcm(call, b"\x00\x00")
+        self.assertIn(
+            "--device=sink_for_signal_input_10810905082872157051", run.call_args.args[0]
+        )
+
+    def test_reported_device_name_is_preferred(self):
+        call = BRIDGE.SignalCall("spruik", "recipient")
+        call.call_id = 1
+        call.input_device_name = "signal_input_custom"
+        with patch.object(BRIDGE.subprocess, "run") as run:
+            BRIDGE.play_pcm(call, b"\x00\x00")
+        self.assertIn("--device=sink_for_signal_input_custom", run.call_args.args[0])
+
     def test_send_audio_uses_audiosocket_slin8_frame(self):
         sender, receiver = socket.socketpair()
         try:
