@@ -120,6 +120,59 @@ class SignalAudioSocketBridgeTests(unittest.TestCase):
 
         self.assertIsNone(broker._inbound)
 
+    def _announce_broker(self):
+        broker = object.__new__(BRIDGE.CallBroker)
+        broker.account = "spruik"
+        broker.recipient = "recipient"
+        broker._call_slot = __import__("threading").Lock()
+        return broker
+
+    def test_announce_speaks_twice_after_answer_and_hangs_up(self):
+        broker = self._announce_broker()
+        call = MagicMock()
+        with patch.object(BRIDGE, "SignalCall", return_value=call), \
+                patch.object(BRIDGE, "synthesize", return_value=b"\x01\x02") as speak, \
+                patch.object(BRIDGE, "play_pcm") as play, \
+                patch.object(BRIDGE.time, "sleep"):
+            self.assertEqual((200, "answered"), broker.announce("Coffee is waiting", "af_bella"))
+        speak.assert_called_once_with("Coffee is waiting", "af_bella")
+        call.start.assert_called_once()
+        audio = play.call_args.args[1]
+        self.assertEqual(2, audio.count(b"\x01\x02"))
+        call.stop.assert_called_once()
+        self.assertTrue(broker._call_slot.acquire(blocking=False))
+
+    def test_announce_reports_unanswered_and_frees_the_line(self):
+        broker = self._announce_broker()
+        call = MagicMock()
+        call.start.side_effect = TimeoutError("Signal call was not answered")
+        with patch.object(BRIDGE, "SignalCall", return_value=call), \
+                patch.object(BRIDGE, "synthesize", return_value=b"\x00"), \
+                patch.object(BRIDGE, "play_pcm") as play:
+            self.assertEqual((504, "unanswered"), broker.announce("Coffee is waiting"))
+        play.assert_not_called()
+        call.stop.assert_called_once()
+        self.assertTrue(broker._call_slot.acquire(blocking=False))
+
+    def test_announce_does_not_interrupt_a_live_call(self):
+        broker = self._announce_broker()
+        broker._call_slot.acquire()
+        with patch.object(BRIDGE, "SignalCall") as make_call:
+            self.assertEqual((409, "busy"), broker.announce("Coffee is waiting"))
+        make_call.assert_not_called()
+
+    def test_announce_rejects_empty_or_long_text(self):
+        broker = self._announce_broker()
+        self.assertEqual(400, broker.announce("   ")[0])
+        self.assertEqual(400, broker.announce("x" * 401)[0])
+
+    def test_outgoing_call_plays_into_its_signal_input_device(self):
+        call = BRIDGE.SignalCall("spruik", "recipient")
+        call.call_id = 7
+        with patch.object(BRIDGE.subprocess, "run") as run:
+            BRIDGE.play_pcm(call, b"\x00\x00")
+        self.assertIn("--device=sink_for_signal_input_7", run.call_args.args[0])
+
     def test_send_audio_uses_audiosocket_slin8_frame(self):
         sender, receiver = socket.socketpair()
         try:

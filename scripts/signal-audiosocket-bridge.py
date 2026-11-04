@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Bridge Asterisk and private inbound calls to signal-cli's call audio."""
+"""Bridge Asterisk and private inbound calls to signal-cli's call audio.
+
+Also places short spoken announcement calls (POST /announce) to the recipient.
+"""
 
 import json
 import os
@@ -33,6 +36,9 @@ INBOUND_GREETING = os.environ.get(
 )
 INBOUND_VOICE = os.environ.get("SIGNAL_INBOUND_VOICE", "af_heart")
 INBOUND_CONNECT_SECONDS = int(os.environ.get("SIGNAL_INBOUND_CONNECT_SECONDS", "20"))
+ANNOUNCE_VOICE = os.environ.get("SIGNAL_ANNOUNCE_VOICE", INBOUND_VOICE)
+ANNOUNCE_MAX_CHARS = 400
+ANNOUNCE_REPEATS = 2
 
 
 def get_account():
@@ -131,6 +137,8 @@ class SignalCall:
         self.connection = None
         self.stream = None
         self.call_id = None
+        # Outgoing calls use signal_input_<call id>; play_pcm falls back to that.
+        self.input_device_name = None
         self._write_lock = threading.Lock()
 
     def _send(self, method, params, request_id):
@@ -364,6 +372,37 @@ class CallBroker:
         ).start()
         return 200, "connected"
 
+    def announce(self, text, voice=None):
+        """Call the recipient, speak `text` once they answer, then hang up.
+
+        Returns (status, body): 200 "answered", 504 "unanswered", 409 "busy",
+        400 for bad text, 503 when the call or speech fails.
+        """
+        text = (text or "").strip()
+        if not text or len(text) > ANNOUNCE_MAX_CHARS:
+            return 400, "invalid text"
+        if not self._call_slot.acquire(blocking=False):
+            return 409, "busy"
+        call = SignalCall(self.account, self.recipient)
+        try:
+            # Generate speech before ringing so the message starts on answer.
+            pcm = synthesize(text, voice or ANNOUNCE_VOICE)
+            pause = bytes(24000 * 2)  # one second of silence at 24 kHz s16le
+            call.start()
+            time.sleep(0.8)  # let the audio path settle after CONNECTED
+            print("Announcement call connected; playing Kokoro message", flush=True)
+            play_pcm(call, pcm + (pause + pcm) * (ANNOUNCE_REPEATS - 1) + pause)
+            return 200, "answered"
+        except TimeoutError as error:
+            print(str(error), flush=True)
+            return 504, "unanswered"
+        except Exception as error:
+            print(f"Announcement call failed: {error}", flush=True)
+            return 503, "unavailable"
+        finally:
+            call.stop()
+            self._call_slot.release()
+
     def _expire_unclaimed(self, call, claimed):
         if claimed.wait(CLAIM_SECONDS):
             return
@@ -561,6 +600,25 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/call":
             status, body = self.broker.start_call()
+            self._respond(status, body)
+            return
+        self._respond(404, "not found")
+
+    def do_POST(self):
+        if self.path == "/announce":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(min(length, 8192)) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._respond(400, "invalid json")
+                return
+            voice = payload.get("voice")
+            if voice is not None and not (
+                isinstance(voice, str) and voice.replace("_", "").isalnum() and len(voice) <= 32
+            ):
+                self._respond(400, "invalid voice")
+                return
+            status, body = self.broker.announce(payload.get("text"), voice)
             self._respond(status, body)
             return
         self._respond(404, "not found")
