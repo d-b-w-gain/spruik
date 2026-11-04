@@ -109,6 +109,16 @@ deadlock. The token is suppressed from Spruik's access log. Only direct command
 messages from the allowed sender are accepted; ordinary chat, group messages,
 typing events, receipts, and sent-message sync events are ignored.
 
+### Claude inbox
+
+Set `SPRUIK_CLAUDE_INBOX_ENABLED=true` (with Signal commands enabled) to keep
+ordinary direct messages from the allowed sender in
+`/var/lib/spruik/claude-inbox.jsonl`: the message text and the ids of any
+attachments (signal-cli's stored file names), last 200 entries, no phone
+numbers. A local agent can read that file and reply through signal-cli. Messages
+from anyone else are never written. `/claude off` stops recording, and
+`/claude on` resumes it.
+
 Available commands are `/help`, `/status`, `/calls`, `/voicemail`, and `/ping`.
 They expose bounded operational summaries without caller identities or message
 contents.

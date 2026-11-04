@@ -170,6 +170,61 @@ class ManagerTests(unittest.TestCase):
             payload["params"]["envelope"]["sourceNumber"] = "+61000000002"
             self.assertIsNone(server.command_event(payload))
 
+    def _photo_payload(self, source="+61000000001", text="is this weld ok?"):
+        return {
+            "jsonrpc": "2.0",
+            "method": "receive",
+            "params": {
+                "account": "+61000000000",
+                "envelope": {
+                    "sourceNumber": source,
+                    "timestamp": 5678,
+                    "dataMessage": {
+                        "timestamp": 5678,
+                        "message": text,
+                        "attachments": [
+                            {"id": "AbC123.jpg", "contentType": "image/jpeg", "filename": None, "size": 42},
+                            {"id": "../escape", "contentType": "image/jpeg"},
+                        ],
+                    },
+                },
+            },
+        }
+
+    def test_claude_inbox_keeps_allowed_sender_text_and_attachment_ids(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            server, "SIGNAL_NUMBER", "+61000000000"
+        ), mock.patch.object(
+            server, "SIGNAL_COMMAND_ALLOWED_SENDER", "+61000000001"
+        ), mock.patch.object(server, "CLAUDE_INBOX_ENABLED", True), mock.patch.object(
+            server, "CLAUDE_INBOX_FILE", Path(directory) / "inbox.jsonl"
+        ), mock.patch.object(
+            server, "CLAUDE_INBOX_STATE_FILE", Path(directory) / "inbox-state.json"
+        ), mock.patch.object(
+            server, "SIGNAL_COMMAND_STATE_FILE", Path(directory) / "state.json"
+        ):
+            self.assertTrue(server.record_claude_inbox(self._photo_payload()))
+            self.assertFalse(server.record_claude_inbox(self._photo_payload()))
+            self.assertFalse(server.record_claude_inbox(self._photo_payload(source="+61000000002")))
+            self.assertFalse(server.record_claude_inbox(self._photo_payload(text="/status")))
+            lines = server.CLAUDE_INBOX_FILE.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            event = json.loads(lines[0])
+            self.assertEqual(event["text"], "is this weld ok?")
+            self.assertEqual([a["id"] for a in event["attachments"]], ["AbC123.jpg"])
+            self.assertNotIn("+6100", lines[0])
+
+            self.assertIn("off", server.command_response("/claude off"))
+            payload = self._photo_payload(text="paused message")
+            self.assertFalse(server.record_claude_inbox(payload))
+            self.assertIn("on", server.command_response("/claude on"))
+            self.assertTrue(server.record_claude_inbox(payload))
+
+    def test_claude_inbox_disabled_by_default(self):
+        with mock.patch.object(server, "CLAUDE_INBOX_ENABLED", False):
+            self.assertFalse(server.record_claude_inbox(self._photo_payload()))
+            self.assertIn("Unknown", server.command_response("/claude on"))
+
     def test_command_deduplication_persists_only_a_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "signal-command-state.json"

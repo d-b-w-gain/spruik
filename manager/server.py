@@ -77,6 +77,15 @@ SIGNAL_COMMAND_ALLOWED_SENDER = os.getenv(
 )
 SIGNAL_COMMAND_WEBHOOK_TOKEN = os.getenv("SPRUIK_SIGNAL_COMMAND_WEBHOOK_TOKEN", "")
 SIGNAL_COMMAND_STATE_FILE = DATA_DIR / "signal-command-state.json"
+CLAUDE_INBOX_ENABLED = os.getenv("SPRUIK_CLAUDE_INBOX_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+CLAUDE_INBOX_FILE = DATA_DIR / "claude-inbox.jsonl"
+CLAUDE_INBOX_STATE_FILE = DATA_DIR / "claude-inbox-state.json"
+CLAUDE_INBOX_KEEP = 200
+CLAUDE_INBOX_LOCK = threading.Lock()
 
 PROMPTS = {
     "standard": {
@@ -378,7 +387,9 @@ def send_signal(message, recording=None, recipient=None):
             raise RuntimeError(f"Signal returned HTTP {response.status}")
 
 
-def command_event(payload):
+def allowed_direct_message(payload):
+    """Return (account, source, envelope, dataMessage) for a direct message
+    from the allowed sender, or None for anything else."""
     if not isinstance(payload, dict):
         return None
     if payload.get("method") not in (None, "receive"):
@@ -397,6 +408,14 @@ def command_event(payload):
         or data_message.get("groupInfo")
     ):
         return None
+    return account, source, envelope, data_message
+
+
+def command_event(payload):
+    direct = allowed_direct_message(payload)
+    if direct is None:
+        return None
+    account, source, envelope, data_message = direct
     message = data_message.get("message")
     if not isinstance(message, str) or not message.strip().startswith("/"):
         return None
@@ -444,6 +463,82 @@ def enqueue_signal_command(payload):
     return True
 
 
+def claude_inbox_paused():
+    try:
+        state = json.loads(CLAUDE_INBOX_STATE_FILE.read_text(encoding="utf-8"))
+        return bool(state.get("paused")) if isinstance(state, dict) else False
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+
+
+def set_claude_inbox_paused(paused):
+    CLAUDE_INBOX_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CLAUDE_INBOX_STATE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"paused": bool(paused)}) + "\n", encoding="utf-8")
+    os.replace(temporary, CLAUDE_INBOX_STATE_FILE)
+
+
+def inbox_event(payload):
+    """A non-command direct message (text and/or attachments) from the allowed
+    sender, shaped for the Claude inbox. Attachment ids are signal-cli's stored
+    file names; the files themselves stay in signal-cli."""
+    direct = allowed_direct_message(payload)
+    if direct is None:
+        return None
+    account, source, envelope, data_message = direct
+    message = data_message.get("message")
+    text = message.strip() if isinstance(message, str) else ""
+    if text.startswith("/"):
+        return None
+    attachments = []
+    for item in data_message.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        attachment_id = str(item.get("id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", attachment_id) or attachment_id.startswith("."):
+            continue
+        attachments.append(
+            {
+                "id": attachment_id,
+                "contentType": str(item.get("contentType") or "")[:100],
+                "filename": str(item.get("filename") or "")[:200],
+                "size": item.get("size") if isinstance(item.get("size"), int) else None,
+            }
+        )
+    if not text and not attachments:
+        return None
+    timestamp = data_message.get("timestamp") or envelope.get("timestamp")
+    fingerprint = hashlib.sha256(
+        f"inbox|{account}|{source}|{timestamp}|{text}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "id": fingerprint[:32],
+        "fingerprint": fingerprint,
+        "timestamp": timestamp if isinstance(timestamp, int) else int(time.time() * 1000),
+        "text": text[:4000],
+        "attachments": attachments[:10],
+    }
+
+
+def record_claude_inbox(payload):
+    if not CLAUDE_INBOX_ENABLED or claude_inbox_paused():
+        return False
+    event = inbox_event(payload)
+    if event is None or not remember_command(event.pop("fingerprint")):
+        return False
+    with CLAUDE_INBOX_LOCK:
+        try:
+            lines = CLAUDE_INBOX_FILE.read_text(encoding="utf-8").splitlines()
+        except (FileNotFoundError, OSError):
+            lines = []
+        lines.append(json.dumps(event, separators=(",", ":")))
+        CLAUDE_INBOX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = CLAUDE_INBOX_FILE.with_suffix(".tmp")
+        temporary.write_text("\n".join(lines[-CLAUDE_INBOX_KEEP:]) + "\n", encoding="utf-8")
+        os.replace(temporary, CLAUDE_INBOX_FILE)
+    return True
+
+
 def status_symbol(value):
     return "online" if value in (True, "online") else "offline"
 
@@ -458,7 +553,15 @@ def command_response(message):
             "/calls - five recent anonymous outcomes\n"
             "/voicemail - retained-message summary\n"
             "/ping - confirm the command bot is awake"
+            + ("\n/claude on|off - pass your messages and photos to Claude" if CLAUDE_INBOX_ENABLED else "")
         )
+    if command == "/claude" and CLAUDE_INBOX_ENABLED:
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        if action in ("on", "off"):
+            set_claude_inbox_paused(action == "off")
+        if claude_inbox_paused():
+            return "Claude is off. Messages stay with Spruik. Send /claude on to resume."
+        return "Claude is on. Send a message or photo and Claude will reply here."
     if command in ("/status", "/health"):
         status = asterisk_status()
         return "\n".join(
@@ -805,7 +908,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": "Not found"})
                 return
             try:
-                accepted = enqueue_signal_command(self.read_json())
+                event_payload = self.read_json()
+                accepted = enqueue_signal_command(event_payload)
+                if not accepted:
+                    accepted = record_claude_inbox(event_payload)
                 self.send_json(200, {"accepted": accepted})
             except (ValueError, json.JSONDecodeError):
                 self.send_json(400, {"error": "Invalid Signal event"})
